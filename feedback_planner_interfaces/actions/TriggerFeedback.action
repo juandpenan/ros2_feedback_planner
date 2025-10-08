@@ -1,0 +1,6 @@
+string feedback_input
+---
+bool result_text
+---
+string feedback_text
+
