@@ -14,6 +14,7 @@ import base64
 import cv2
 import io
 import time
+import re
 from cv_bridge import CvBridge
 from google import genai
 import os
@@ -33,6 +34,7 @@ class FeedbackNode(LifecycleNode):
         self.last_image = None
         self.last_prompt = None
         self.last_answer = None
+        self.probability_threshold = 1.0
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info('Configuring...')
@@ -40,6 +42,8 @@ class FeedbackNode(LifecycleNode):
         self.bridge = CvBridge()
 
         try:
+            self.probability_threshold = self.get_parameter(
+                'probability_threshold').get_parameter_value().double_value
             self.vendor = self.get_parameter(
                 'llm_client.vendor').get_parameter_value().string_value
             self.api_key_variable_name = self.get_parameter(
@@ -191,6 +195,21 @@ class FeedbackNode(LifecycleNode):
     #     self.timer.reset()
 
 
+def strip_markdown_json(text):
+    """Remove markdown code fences from JSON response."""
+    text = text.strip()
+    # Remove ```json and ``` markers
+    if text.startswith('```json'):
+        text = text[7:]  # Remove ```json
+    elif text.startswith('```'):
+        text = text[3:]  # Remove ```
+    
+    if text.endswith('```'):
+        text = text[:-3]  # Remove trailing ```
+    
+    return text.strip()
+
+
 async def main_loop(node, config):
 
     async with node.llm.live_session(config) as session:
@@ -200,23 +219,28 @@ async def main_loop(node, config):
                 continue
             # if node.last_image is not None:
             #     node.last_image.show()
+            node.get_logger().info(f'Last prompt: {node.last_prompt}')
             await session.send_realtime_input(media=node.last_image)
             await session.send_realtime_input(text=node.last_prompt)
             buffer = ''
             is_canceled = False
             async for response in session.receive():
                 if response is not None and response.text is not None:
-                    node.get_logger().info(f'LLM response: {response.text}')
-                    if 'yes' in str(response.text).lower():
-                        is_canceled = True
-                        node.is_executing = False
                     buffer += response.text
+                    if 'probability_of_failure' in response.text:
+                        match = re.search(r'"probability_of_failure":\s*(\d*\.?\d+)', response.text)
+                        if match:
+                            prob = float(match.group(1))
+                            node.get_logger().info(f'Probability: {prob}')
+                            if prob > node.probability_threshold:
+                                is_canceled = True
+                                break
             node.last_answer = buffer
             if is_canceled:
                 req = TriggerFeedback.Request()
                 req.feedback_input = node.last_answer
-                node.get_logger().info('Canceling current action')
-                # node.cancel_action_client.call_async(req)
+                node.get_logger().info('Canceling current action due to high failure probability')
+                node.cancel_action_client.call_async(req)
             await asyncio.sleep(0.25)
 
 
