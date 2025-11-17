@@ -28,6 +28,7 @@ class ForecastPlan(BaseModel):
 
     reason: str
     plan: list[str]
+    fallback_action: str
     action_and_preconditions: ActionFuturePrecondition = Field(
         ...,
         alias='feedback_input',
@@ -49,6 +50,9 @@ class DoReMiPlan(BaseModel):
             'The first action from the plan and its current + preconditions'
         )
     )
+    fallback: str = Field(...,
+                          alias='fallback_action',
+                          description='The first action from the plan')
 
 
 class MonologuePlan(BaseModel):
@@ -64,3 +68,6 @@ class MonologuePlan(BaseModel):
     action: str = Field(...,
                         alias='feedback_input',
                         description='The first action from the plan')
+    fallback: str = Field(...,
+                          alias='fallback_action',
+                          description='The first action from the plan')

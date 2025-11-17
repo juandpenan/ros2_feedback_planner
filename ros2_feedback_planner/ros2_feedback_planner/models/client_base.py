@@ -217,12 +217,14 @@ class BaseClient(ABC):
                     config=types.GenerateContentConfig(
                         response_mime_type='application/json',
                         system_instruction=self._system_prompt if self._system_prompt else None,
-                        response_schema=self._output_format_class if self._output_format_class else None
+                        response_schema=self._output_format_class if self._output_format_class else None,
+                        thinking_config=types.ThinkingConfig(thinking_budget=-1)
                     ),
                 )
             except Exception as e:
                 print(f'Error during Gemini send_message: {e}')
                 response = None
+                return response
             return response.text
 
     def set_system_prompt(self, prompt: str):

@@ -21,7 +21,7 @@ from launch.event_handlers import (
 )
 from launch_ros import events
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, Node
+from launch_ros.actions import Node
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.actions import IncludeLaunchDescription
 from launch.actions import OpaqueFunction
@@ -103,7 +103,6 @@ def generate_launch_description():
     planning_node = Node(
         package='ros2_feedback_planner',
         executable='planner_node',
-        name='planner_node',
         namespace=namespace,
         output='screen',
         emulate_tty=True,

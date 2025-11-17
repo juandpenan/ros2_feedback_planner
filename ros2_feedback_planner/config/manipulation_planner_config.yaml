@@ -4,7 +4,7 @@ planner_node:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
       model_name: 'gemini-2.5-flash'
-      temperature: 1.0
+      temperature: 1.5
       max_tokens: 6000
     action_backend: 'moveit'
     planner_type: 'forecast' # doremi, monologue, forecast
@@ -12,14 +12,17 @@ planner_node:
       feedback_mode: 'continious' # once or continious
       system_prompt: |
         You are an expert roboticist and planner. Your mission is to guide a robot to perform a pick-and-place task in an environment with two robots. You control one robot; the other robot is also picking cubes of different colors. Your goal is to pick a all cubes and place them at a target location.
+        You are controlling the manipulator with the green part
       use_image: True
       image_topic: '/gripper_camera/image'
       output_format: ForecastPlan # class to import from planning_outputs_format.py
       planning_prompt: |
         Robot Control (ONLY these actions are allowed):
-          Available colors: ['red', 'blue', 'green', 'yellow', 'purple', 'cyan', 'orange', 'black', 'grey']
+        You are controlling the manipulator with the green part
+          Available colors: ['black', 'blue', 'green', 'yellow', 'purple', 'cyan', 'orange', 'red', 'grey']
           - pick(color): Grasp a cube of that color.
           - place(): Place the currently held cube at location.
+          - pitch_retract(angle_in_rad): retract the manipulator in the negative pitch direction the angle should be in radians
           - done(): Use ONLY immediately after a you have completed your task
         Your Task:
             Analyze and generate a step-by-step plan using the available actions to safely and efficiently place ALL the cubes on the table. Present the plan as a numbered list in this format:
@@ -27,6 +30,7 @@ planner_node:
             Always include the done() action as the final step when the goal is reached.
             Additionally, for the first action, predict any possible future preconditions that might fail before or during the execution of that action.
             Output these predicted future preconditions as a separate list after the plan.
+            Lastly, you must select a fallback action that can be executed immediately whenever replanning is required, to keep the robot in a safe state while a new plan is being generated.
 
         Format:
           Plan:
@@ -35,42 +39,74 @@ planner_node:
           ...
           N. done()
           Future Preconditions at Risk:
-          - pick(blue): trajectory_clear may fail if other robot intercept your trajectory
+          - pick(black): trajectory_clear may fail if other robot intercept your trajectory
           - None: if no precondition at risk found for the task
+          Fallback action:
+          action(parameter)
 
         Examples:
-          Target = red
+          Target = black
           Plan:
-          1. pick(red)
+          1. pick(black)
           2. place()
           Future Preconditions at Risk:
-          - pick(red): trajectory_clear may fail if other robot arm enters workspace
+          - pick(black): trajectory_clear may fail if other robot arm enters workspace
+          Fallback action:
+          pitch_retract(0.785398)
 
-          Replanning (pick(red) failed: cube missing):
+          Replanning (pick(black) failed: cube missing):
           Plan:
-          1. pick(red)
+          1. pick(black)
           2. place()
           Future Preconditions at Risk:
-          - pick(red): trajectory_clear may fail if other robot intercept your trajectory
+          - pick(black): trajectory_clear may fail if other robot intercept your trajectory
+          Fallback action:
+          pitch_retract(0.785398)
 
-          Replanning (pick(red) succeeded):
+          Replanning (pick(black) succeeded):
           Plan:
           1. place()
           Future Preconditions at Risk:
           - place(): trajectory_clear may fail if other robot moves in
+          Fallback action:
+          pitch_retract(0.785398)
 
           Replanning (place() succeeded):
           Plan:
           1. pick(blue)
           Future Preconditions at Risk:
-          - done(): trajectory_clear
-
+          - done(): None
+          Fallback action:
+          pitch_retract(0.785398)
       # available plugins are last_action, feedback_output, 
       replan_prompt_plugins: ['last_action', 'feedback_output'] 
       replan_prompt: |
-          You are replanning. The last action executed was: {last_action}.
-          The feedback received for this action was: {feedback_output}.
-          Use this information to decide the next best step for the robot to reach its goal.
+        You are replanning. The last action executed was: {last_action}.
+        The feedback received for this action was: {feedback_output}.
+        
+        CRITICAL REPLANNING RULES:
+        1. If the last action was pick(color) and it SUCCEEDED:
+           - You MUST execute place() next. Do NOT pick another cube.
+           - The robot is currently holding a cube and cannot pick another until it places the current one.
+        
+        2. If the last action was place() and it SUCCEEDED:
+           - You MUST pick a NEW cube that is still visible on the table in the current image.
+           - Do NOT attempt to pick cubes that are no longer visible in the image (they may have been picked by the other robot).
+           - Carefully analyze the current camera image to see which cubes remain available.
+        
+        3. If an action FAILED:
+           - Analyze the current image to understand why (e.g., cube missing, trajectory blocked).
+           - If a cube is missing from the table, assume the other robot took it and choose a DIFFERENT cube that IS visible.
+           - Do NOT retry the same action unless you can see in the image that the conditions have changed.
+        
+        4. Always prioritize cubes that are clearly visible in the current camera image.
+        
+        5. If ALL cubes have been picked and placed (none visible on table), execute done().
+        
+        Use the current scene information (camera image) to verify which cubes are still available before planning your next action.
+        Remember you are controlling the manipulator with the green part.
+        
+        Based on the above rules and the current image, generate your next plan.
     monologue:
       feedback_mode: 'once' # once or continious
       system_prompt: |
@@ -102,9 +138,9 @@ planner_node:
 
         Examples:
           Next action:
-          1. pick(red)
+          1. pick(black)
 
-          You are replanning. The last action executed was: pick(red).
+          You are replanning. The last action executed was: pick(black).
           The feedback received for this action was: There was an error executing the action
           Use this information to decide the next best step for the robot to reach its goal.
           Next action:
@@ -143,13 +179,17 @@ planner_node:
 
       planning_prompt: |
         Robot Control (ONLY allowed):
+          Available colors: ['red', 'blue', 'green', 'yellow', 'purple', 'cyan', 'orange', 'black', 'grey']
           - pick(color)
-          - place(location)
+          - place()
           - done()
         Task:
           Provide a numbered plan: pick target cube -> place -> done.
-          FIRST action only: list at-risk preconditions (cube_available, gripper_empty, no_interference, location_clear, holding_cube).
+          FIRST action only: list at-risk preconditions (E.g location_clear, path_clear).
           Avoid interference with the other robot. Do NOT output actions outside the allowed set.
+       
+        You are controlling the Green marked manipulator
+        you might want to start with the red cube
         IMPORTANT: Only output done() after a successful place().
 
         Format:
@@ -159,37 +199,34 @@ planner_node:
           ...
           N. done()
           Preconditions at Risk:
-          - pick(red): cube_available may fail if other robot takes it first
+          - pick(red): path_clear may fail if other robot collides with the manipulator
           - None
 
         Example (target=red):
           Plan:
           1. pick(red)
           2. place()
-          3. done()
           Preconditions:
-            - pick(red): cube_available
+            - pick(red): path_clear
 
           Replanning (pick(red) failed: cube missing):
           Plan:
           1. pick(red)
           2. place()
-          3. done()
           Preconditions:
-            - pick(red): cube_available
+            - pick(red): path_clear
 
           Replanning (pick(red) succeeded):
           Plan:
           1. place()
-          2. done()
           Preconditions:
             - place(): location_clear
 
           Replanning (place() succeeded):
           Plan:
-          1. done()
+          1. pick(black)
           Preconditions:
-            - done(): None
+            - pick(black): no_interference
       # available plugins are last_action, feedback_output, 
       replan_prompt_plugins: ['last_action', 'feedback_output'] 
       replan_prompt: |
@@ -203,32 +240,74 @@ feedback_node:
     llm_client:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
-      model_name: 'gemini-live-2.5-flash-preview' #'gemini-live-2.5-flash-preview' gemini-2.0-flash-live-001
-      temperature: 0.5
-      max_tokens: 1000
+      model_name: 'gemini-2.0-flash-live-001' #'gemini-live-2.5-flash-preview' gemini-2.0-flash-live-001 gemini-2.5-flash-native-audio-preview-09-2025
+      temperature: 1.0
+      max_tokens: 2000
     feedback_type: 'forecast'  # doremi monologue forecast
     forecast:
+      probability_threshold: likely
       system_prompt: |
-        You are assisting a robot by analyzing and FORECASTING its environment to determine if the other robot or any dynamic agent present or moving within the scene could impact the success of its ongoing action.
+        You are assisting a robot by analyzing and FORECASTING its environment to determine if other robots or dynamic agents could impact the success of its ongoing action. 
+        Your goal is to predict the likely future states of all dynamic agents (robots, people, animals, vehicles, moving objects) within the next second, based on their current positions, velocities, and behaviors.
+        You may imagine likely movements and interactions even if you do not have perfect certainty. Your task is to forecast potential precondition failures for the next second.
       image_topic: '/gripper_camera/image'
       prompt: | # you must have a {feedback_input}
-        Current action and preconditions to check: {feedback_input}
 
-          Your task: For each precondition in the list above, predict whether it will hold at this action.
+        Current action and preconditions: {feedback_input}
 
-          Consider the current scene as observed from the robot’s camera (you are controlling the one next to the black bin), and analyze the predicted future states of all dynamic agents (e.g., other robot, people, animals, vehicles, or any moving entities) within the NEXT SECOND.
+        You are a robot safety forecaster. Your goal is to predict if any precondition for the current action will fail or be at risk within the NEXT SECOND based on predicted agent (robot/manipulator) motion.
 
-          Ask yourself for each precondition: Is there a high probability, with clear and convincing evidence, that the predicted future states of any dynamic agent (especially the other robot) will interfere with the predicted future state of the currently executing action within the NEXT SECOND, causing that precondition to fail? Only answer "Yes" if you are sure the violation will occur.
+        Key Focus Areas: Analyze proximity, motion direction, and workspace contention.
 
-          Answer format:
-          - For each precondition, start your answer with "Yes" only if failure is highly likely and certain due to a dynamic agent, followed by a brief explanation.
-          - Otherwise, start with "No" if the precondition will hold or if failure is uncertain or unlikely, followed by a brief explanation.
+        Are agents/manipulators moving toward the same region or object?
 
-          Example answers:
-          - trajectory_clear: Yes, The action had to be canceled due to the other robot moving into the workspace within the next second
-          - cube_available: No, The cube is free and it seems no agent will try to manipulate within the next second
-          - no_interference: No, the other robot is nearby but not moving toward the workspace.
-          Answer:
+        Is there a credible risk of path overlap, occlusion, or interference within the next second?
+
+        Assess the risk level based on these predictions. Use "likely" or "very likely" if motions create a clear risk of interference.
+
+        Use "neutral" or "improbable" if agents are nearby but their predicted paths are clearly diverging or non-conflicting.
+
+        Failure Risk Categories: "very improbable", "improbable", "neutral", "likely", "very likely"
+
+        It is important to note that you are the robot with a green mark
+
+        Answer Format: Output ONLY a valid JSON object with the following structure. Do not include any text before or after the JSON.
+
+        {
+          "preconditions": [
+            {
+              "name": "precondition_name",
+              "probability_of_failure": "probability_category",
+              "explanation": "brief explanation of the risk (e.g., proximity, path overlap, occlusion)"
+            }
+          ]
+        }
+
+        Example JSON Output:
+        {
+          "preconditions": [
+            {
+              "name": "trajectory_clear",
+              "probability_of_failure": "very likely",
+              "explanation": "Both manipulators are approaching the same region; the other arm may intersect this robot's path within the next second."
+            },
+            {
+              "name": "cube_exists",
+              "probability_of_failure": "likely",
+              "explanation": "The other robot is close to the red cube and is extending its arm toward it, possibly grasping it first."
+            },
+            {
+              "name":"gripper_free",
+              "probability_of_failure": "neutral",
+              "explanation": "Another agent is in the general workspace but on a non-conflicting path."
+            },
+            {
+              "name": "no_interference",
+              "probability_of_failure": "improbable",
+              "explanation": "No agents are near the active workspace; interference is improbable."
+            }
+          ]
+        }
     monologue:
       system_prompt: |
         You are assisting a robot by analyzing its environment to determine if an action was successfully executed.
@@ -237,18 +316,24 @@ feedback_node:
         Current action to check: {feedback_input}
 
         Your task: Evaluate whether the robot has successfully completed the specified pick-and-place action.
-
-        Analyze the current scene assess if the expected outcome of the action is clearly visible. For instance, a successful pick(color) action means the colored cube is clearly grasped by the robot’s end-effector and is no longer at its original location in the scene. For place(location) actions, a successful outcome means the colored cube is clearly placed at the specified location.
+        
+        You are currently evaluating the scene for the GREEN MARKED MANIPULATOR AT THE LEFT ONLY
+        Analyze the current scene assess if the expected outcome of the action is clearly visible. For instance, a successful pick(color) action means the colored cube is clearly grasped by the robot's end-effector and is no longer at its original location in the scene.
+        For place() actions, a failed outcome the robot is colliding, otherwise place was a success.
+        
+        IMPORTANT: If the robot is colliding or in contact with another agent (robot, manipulator, obstacle), the action has FAILED, regardless of whether the pick or place seems to have been executed.
 
         Answer format:
-        - Yes: if the action was clearly and successfully completed, based on the image.
-        - No: if the action was not completed, is ambiguous, or the outcome is not visible.
+        - Yes: if the action was successfully completed, based on the image, AND there is no collision with other agents.
+        - No: if the action was not completed, is ambiguous, the outcome is not visible, OR the robot is colliding with another agent.
 
         Example answers:
-        - pick(red): Yes The cube is on the robots gripper
+        - pick(red): Yes The cube is on the robots gripper and there is no collision
         - pick(red): No The cube is still on the table
-        - place(): Yes cube was placed correcly
+        - pick(red): No The robot is colliding with the other manipulator
+        - place(): Yes cube was placed correcly and there is no collision
         - place(): No The cube did not land on the place location
+        - place(): No The robot is in contact with another agent
 
         Answer:
     doremi:
@@ -258,26 +343,41 @@ feedback_node:
       prompt: | # you must have a {feedback_input}
         Current action and preconditions to check: {feedback_input}
 
-          Your task: For each precondition in the list above, determine whether it is currently being violated based on the scene observed from the robot's camera.
+        Your task: For each precondition in the list above, determine whether it is currently being violated based on the scene observed from the robot's camera. You are focusing on the GREEN MARKED MANIPULATOR ONLY
 
-          Focus ONLY on the specific precondition itself—do not consider unrelated factors or speculate beyond what is directly relevant to the precondition. Pay special attention to the position and actions of the other robot, as interference or collision must be avoided.
+        Focus ONLY on the specific precondition itself—do not consider unrelated factors or speculate beyond what is directly relevant to the precondition. Pay special attention to the position and actions of the other agents, as interference or collision must be avoided.
 
-          For each precondition, carefully analyze the image and ask yourself: Is there evidence that this precondition is not satisfied right now? For example, for "no_interference", check if the other robot is overlapping or moving into the workspace.
+        For each precondition, carefully analyze the image and ask yourself: Is there evidence that this precondition is not satisfied right now? For example, for "path_clear", check if the other robot is blocking the trajectory
 
-          Answer format:
-          - For each precondition, start your answer with "Yes" or "No", followed by a brief explanation.
+        Answer format:
+        - For each precondition, start your answer with "Yes" or "No", followed by a brief explanation.
 
-          Example answers:
-          - no_interference(): Yes, The action had to be canceled due to the other robot moving into the workspace
-          - arm_free: No, there are no visible obstacles near the robot’s arm.
+        Example answers:
+        - path_clear(): Yes, The action had to be canceled due to the other is located in the current robot trajectory
+        - arm_free: No, there are no visible obstacles near the robot’s arm.
 
-          Answer:
+        Answer:
 
 metrics_manager_node:
   ros__parameters:
     data_path: /home/juan/experiments_manipulation
     test_type: 'manipulation' #nav manipulation
     strategy: 'forecast'
-    timeout_seconds: 350.0 # less than 6 minutes to sucess
+    timeout_seconds: 600.0 # 10 minutes
     manipulation:
-      probability_of_colission: 1.0
+      probability_of_colission: 0.2
+
+manipulator_simulator:
+  ros__parameters:
+    cubes: ['red', 'blue', 'green', 'yellow', 'purple', 'cyan', 'orange', 'black', 'grey']
+    red: [0.8, 0.0, 0.55]
+    blue: [0.65, 0.25, 0.55]
+    green: [0.8, -0.25, 0.55]
+    yellow: [0.95, 0.0, 0.55]
+    purple: [0.65, -0.25, 0.55]
+    cyan: [0.95, 0.25, 0.55]
+    orange: [0.95, -0.25, 0.55]
+    black: [0.65, 0.0, 0.53]
+    grey: [0.8, 0.25, 0.55]
+
+

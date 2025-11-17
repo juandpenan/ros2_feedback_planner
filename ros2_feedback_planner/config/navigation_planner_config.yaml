@@ -7,7 +7,7 @@ planner_node:
       temperature: 1.0
       max_tokens: 6000
     action_backend: 'nav2'
-    planner_type: 'doremi' # doremi, monologue todo(juandpenan): rename current to method name when name is clear
+    planner_type: 'monologue' # doremi, monologue todo(juandpenan): rename current to method name when name is clear
     forecast:
       feedback_mode: 'continious' # once or continious
       system_prompt: |
@@ -519,8 +519,9 @@ feedback_node:
       model_name: 'gemini-live-2.5-flash-preview' #'gemini-live-2.5-flash-preview' gemini-2.0-flash-live-001
       temperature: 0.0
       max_tokens: 750
-    feedback_type: 'doremi'  # doremi monologue forecast
+    feedback_type: 'monologue'  # doremi monologue forecast
     forecast:
+      probability_threshold: likely
       system_prompt: |
         You are assisting a robot by analyzing and FORECASTING its environment to determine if people (humans) present or moving within the scene could impact the success of its ongoing action.
       image_topic: '/head_front_camera/image'
@@ -595,7 +596,7 @@ metrics_manager_node:
   ros__parameters:
     data_path: /home/juan/experiments
     test_type: 'navigation' #nav manipulation
-    strategy: 'doremi'
+    strategy: 'monologue'
     timeout_seconds: 350.0 # less than 6 minutes to sucess
     navigation:
       target_frame: 'agent0'
@@ -614,4 +615,4 @@ metrics_manager_node:
       #   y: -0.89
       #   min_yaw: 0.0 # has to be greater than absolute value of yaw
       agent_pose_radius: 0.25 # in m
-      probability_of_colission: 1.0
+      probability_of_colission: 0.2

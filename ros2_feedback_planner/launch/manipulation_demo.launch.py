@@ -28,6 +28,13 @@ def generate_launch_description():
         description='Use /clock (simulation time)'
     )
 
+    log_level = LaunchConfiguration('log_level')
+    log_level_arg = DeclareLaunchArgument(
+        'log_level',
+        default_value='fatal',
+        description='Log level for all nodes (debug, info, warn, error, fatal)'
+    )
+
     manipulator_simulator = Node(
         package='ros2_feedback_planner',
         executable='manipulator_simulator',
@@ -35,7 +42,9 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
-        parameters=[{'use_sim_time': use_sim_time},
+        arguments=['--ros-args', '--log-level', log_level],
+        parameters=[planning_params,
+                    # {'use_sim_time': use_sim_time},
                     ]
     )
 
@@ -46,6 +55,7 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
+        arguments=['--ros-args', '--log-level', log_level],
         parameters=[planning_params]
     )
 
@@ -56,6 +66,7 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
+        arguments=['--ros-args', '--log-level', log_level],
         parameters=[planning_params]
     )
 
@@ -66,14 +77,16 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
+        arguments=['--ros-args', '--log-level', log_level],
         parameters=[planning_params]
     )
 
     return LaunchDescription([
         namespace_launch_arg,
         use_sim_time_arg,
+        log_level_arg,
         manipulator_simulator,
-        # planning_node,
-        # feedback_node,
-        # metrics_manager_node
+        planning_node,
+        feedback_node,
+        metrics_manager_node
     ])

@@ -1,14 +1,20 @@
 """Actions for controlling robot navigation using nav2_simple_commander."""
 
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Pose
 from moveit_configs_utils import MoveItConfigsBuilder
 from moveit.planning import MoveItPy, PlanRequestParameters
 from moveit.core.robot_state import RobotState
 from moveit.core.planning_scene import PlanningScene
-from ros2_feedback_planner.utils import get_gz_pose
+from ros2_feedback_planner.utils import get_gz_pose, is_on_table, set_gz_pose
 from moveit.utils import create_params_file_from_dict
 from ament_index_python.packages import get_package_share_directory
+from moveit_msgs.msg import CollisionObject
+from shape_msgs.msg import SolidPrimitive
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
+from moveit.core.robot_trajectory import RobotTrajectory
+from moveit_msgs.msg import RobotTrajectory as RobotTrajectoryMsg
 import time
 import os
 import rclpy
@@ -16,6 +22,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from moveit_msgs.action import ExecuteTrajectory
 from action_msgs.msg import GoalStatus
+from control_msgs.action import FollowJointTrajectory
 
 class BaseAction:
     """BaseAction provides robot navigation actions using nav2_simple_commander."""
@@ -46,17 +53,18 @@ class BaseAction:
                 'move_to': self._move_to,
                 'done': self._done
             }
-            self.locations = self._init_poses()
-            self.navigator = BasicNavigator(node_name='navigator')
+            self.locations = self.init_poses()
+            self.navigator = BasicNavigator(node_name='basic_navigator')
             self.navigator.waitUntilNav2Active()
 
         if self.use_moveit:
             self.all_methods = {
                 'pick': self._pick,
                 'place': self._place,
+                'pitch_retract': self._pitch_retract,
                 'done': self._done
             }
-            self.locations = self._init_poses()
+            self.locations = self.init_poses()
 
             mappings = {
                 'name': 'panda',
@@ -102,10 +110,38 @@ class BaseAction:
             self.execute_trajectory_client = ActionClient(self.moveit_node,
                                                           ExecuteTrajectory,
                                                           '/execute_trajectory')
+            
+            self.r1_gripper_trajectory_client = ActionClient(
+                self.moveit_node,
+                FollowJointTrajectory,
+                '/robot1_gripper_trajectory_controller/follow_joint_trajectory'
+            )
+            self.r1_joint_trajectory_client = ActionClient(
+                self.moveit_node,
+                FollowJointTrajectory,
+                '/robot1_joint_trajectory_controller/follow_joint_trajectory'
+            )
+            self.r2_gripper_trajectory_client = ActionClient(
+                self.moveit_node,
+                FollowJointTrajectory,
+                '/robot2_gripper_trajectory_controller/follow_joint_trajectory'
+            )
+            self.r2_joint_trajectory_client = ActionClient(
+                self.moveit_node,
+                FollowJointTrajectory,
+                '/robot2_joint_trajectory_controller/follow_joint_trajectory'
+            )
+
+           
             try:
+                available = self.r1_gripper_trajectory_client.wait_for_server(timeout_sec=5.0)
+                available = self.r1_joint_trajectory_client.wait_for_server(timeout_sec=5.0)
+                available = self.r2_gripper_trajectory_client.wait_for_server(timeout_sec=5.0)
+                available = self.r2_joint_trajectory_client.wait_for_server(timeout_sec=5.0)
                 available = self.execute_trajectory_client.wait_for_server(timeout_sec=5.0)
             except Exception:
                 available = False
+
             # MoveIt action state tracking
             self.moveit_goal_handle = None
             self.moveit_result_future = None
@@ -116,6 +152,72 @@ class BaseAction:
             self.panda_arm = self.panda.get_planning_component(self.moveit_component_prefix + 'arm')
             self.panda_gripper = self.panda.get_planning_component(self.moveit_component_prefix + 'gripper')
             self.moveit_execution_manager = self.panda.get_trajectory_execution_manager()
+            planning_scene_monitor = self.panda.get_planning_scene_monitor()
+            with planning_scene_monitor.read_write() as scene:
+                self._add_table_collision_object(scene)
+
+    def _add_table_collision_object(self, scene):
+        collision_object = CollisionObject()
+        collision_object.header.frame_id = 'world'
+        collision_object.id = 'table'
+
+        box_pose = Pose()
+        box_pose.position.x = 0.78
+        box_pose.position.y = 0.0
+        box_pose.position.z = 0.5
+        box_pose.orientation.z = 0.7071081
+        box_pose.orientation.w = 0.7071055
+
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [1.5, 0.8, 0.03]
+
+        collision_object.primitives.append(box)
+        collision_object.primitive_poses.append(box_pose)
+        collision_object.operation = CollisionObject.ADD
+
+        scene.apply_collision_object(collision_object)
+        scene.current_state.update()
+
+        collision_object = CollisionObject()
+        collision_object.header.frame_id = 'world'
+        collision_object.id = 'red_basket'
+
+        box_pose = Pose()
+        box_pose.position.x = 1.01
+        box_pose.position.y = 0.5
+        box_pose.position.z = 0.6
+
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [0.29, 0.29, 0.16]
+
+        collision_object.primitives.append(box)
+        collision_object.primitive_poses.append(box_pose)
+        collision_object.operation = CollisionObject.ADD
+
+        scene.apply_collision_object(collision_object)
+        scene.current_state.update()
+
+        collision_object = CollisionObject()
+        collision_object.header.frame_id = 'world'
+        collision_object.id = 'black_basket'
+
+        box_pose = Pose()
+        box_pose.position.x = 0.55
+        box_pose.position.y = -0.5
+        box_pose.position.z = 0.59
+
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [0.29, 0.2, 0.135]
+
+        collision_object.primitives.append(box)
+        collision_object.primitive_poses.append(box_pose)
+        collision_object.operation = CollisionObject.ADD
+
+        scene.apply_collision_object(collision_object)
+        scene.current_state.update()
 
     def get_action_methods(self, actions):
         all_methods = {
@@ -127,6 +229,8 @@ class BaseAction:
             'turn_right': self._turn_right,
             'move_to': self._move_to,
             'pick': self._pick,
+            'place': self._place,
+            'pitch_retract': self._pitch_retract,
             'done': self._done
         }
         return {action: all_methods[action] for action in actions if action in all_methods}
@@ -174,6 +278,34 @@ class BaseAction:
         """Map stored MoveIt status to TaskResult enum."""
         return self.moveit_last_task_result
 
+    def set_result(self, result):
+        """Set the result of the current action execution.
+        
+        Args:
+            result: TaskResult enum value (SUCCEEDED, FAILED, CANCELED, etc.)
+        """
+        if self.use_moveit:
+            self.moveit_last_task_result = result
+            # Map TaskResult to GoalStatus for consistency
+            if result == TaskResult.SUCCEEDED:
+                self.moveit_status = GoalStatus.STATUS_SUCCEEDED
+            elif result == TaskResult.FAILED:
+                self.moveit_status = GoalStatus.STATUS_ABORTED
+            elif result == TaskResult.CANCELED:
+                self.moveit_status = GoalStatus.STATUS_CANCELED
+            else:
+                self.moveit_status = GoalStatus.STATUS_UNKNOWN
+        if self.use_nav:
+
+            if result == TaskResult.SUCCEEDED:
+                self.navigator.status = GoalStatus.STATUS_SUCCEEDED
+            elif result == TaskResult.FAILED:
+                self.navigator.status = GoalStatus.STATUS_ABORTED
+            elif result == TaskResult.CANCELED:
+                self.navigator.status = GoalStatus.STATUS_CANCELED
+            else:
+                self.navigator.status = GoalStatus.STATUS_UNKNOWN
+
     def execute_action(self, action_name, arg):
         method = self.all_methods.get(action_name)
         if not method:
@@ -204,14 +336,14 @@ class BaseAction:
         if self.use_moveit:
             if self.moveit_status == GoalStatus.STATUS_SUCCEEDED:
                 return TaskResult.SUCCEEDED
-            elif self.status == GoalStatus.STATUS_ABORTED:
+            elif self.moveit_status == GoalStatus.STATUS_ABORTED:
                 return TaskResult.FAILED
-            elif self.status == GoalStatus.STATUS_CANCELED:
+            elif self.moveit_status == GoalStatus.STATUS_CANCELED:
                 return TaskResult.CANCELED
             else:
                 return TaskResult.UNKNOWN
 
-    def _init_poses(self):
+    def init_poses(self):
 
         locations = {}
         if self.use_nav:
@@ -282,6 +414,17 @@ class BaseAction:
             lamp_pose.pose.orientation.w = 1.0
             locations['lamp'] = lamp_pose
 
+            robot_default_pose = PoseStamped()
+            robot_default_pose.header.frame_id = 'map'
+            robot_default_pose.pose.position.x = -5.5
+            robot_default_pose.pose.position.y = -3.8
+            robot_default_pose.pose.position.z = 0.0
+            robot_default_pose.pose.orientation.x = 0.0
+            robot_default_pose.pose.orientation.y = 0.0
+            robot_default_pose.pose.orientation.z = 0.7545709 
+            robot_default_pose.pose.orientation.w = 0.6562185
+            locations['robot_default'] = robot_default_pose
+
         if self.use_moveit:
 
             # cubes_xyz = {
@@ -307,7 +450,8 @@ class BaseAction:
                            'grey',]
             cube_poses = {}
             for color in cube_colors:
-                cube_poses[color] = get_gz_pose(entity_name='cube_' + color)
+                if is_on_table(color):
+                    cube_poses[color] = get_gz_pose(entity_name='cube_' + color)
             for color, cube_pose in cube_poses.items():
                 pick_pose = PoseStamped()
 
@@ -330,7 +474,7 @@ class BaseAction:
         self.navigator.info(f'Moving forward {distance} meters.')
         return self.navigator.driveOnHeading(float(distance),
                                              speed=vel,
-                                             time_allowance=float(distance) // vel)
+                                             time_allowance=int(float(distance) / vel))
 
     def _done(self):
         return True
@@ -391,9 +535,16 @@ class BaseAction:
         return self.navigator.goToPose(pose)
 
     def _pick(self, cube):
+
+        new_locations = self.init_poses()
+        
+        for key, new_pose in new_locations.items():
+            if self.locations[key] != new_pose:
+                self.locations[key] = new_pose
+
         self.panda_arm.set_start_state_to_current_state()
         params = PlanRequestParameters(self.panda, 'moveit_cpp')
-        params.max_velocity_scaling_factor = 0.1
+        params.max_velocity_scaling_factor = 0.08
         params.planning_pipeline = 'ompl'
 
         gripper_close_value = 0.01
@@ -401,7 +552,31 @@ class BaseAction:
             f'{self.moveit_component_prefix}finger_joint1': gripper_close_value,
             f'{self.moveit_component_prefix}finger_joint2': gripper_close_value,
         }
+        gripper_open_value = 0.036
+        open_joints_value = {
+            f'{self.moveit_component_prefix}finger_joint1': gripper_open_value,
+            f'{self.moveit_component_prefix}finger_joint2': gripper_open_value,
+        }
 
+        self.robot_model = self.panda.get_robot_model()
+
+        self.panda_gripper.set_start_state_to_current_state()
+        gripper_open = RobotState(self.robot_model)
+        gripper_open.set_joint_group_positions(self.moveit_component_prefix + 'gripper',
+                                               list(open_joints_value.values()))
+        self.panda_gripper.set_goal_state(robot_state=gripper_open)
+
+        gripper_opening_result = self.panda_gripper.plan()
+        if not gripper_opening_result:
+            return False
+
+        if not self._execute_moveit_command(gripper_opening_result.trajectory):
+            return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
         target_pose = self.locations[cube]
 
         elevated_pose = PoseStamped()
@@ -424,7 +599,11 @@ class BaseAction:
 
         if not self._execute_moveit_command(robot_trajectory):
             return False
-
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
         self.panda_arm.set_start_state_to_current_state()
         self.panda_arm.set_goal_state(pose_stamped_msg=target_pose,
                                       pose_link=self.moveit_component_prefix + 'hand_tcp')
@@ -438,6 +617,11 @@ class BaseAction:
 
         if not self._execute_moveit_command(robot_trajectory):
             return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
 
         self.panda_gripper.set_start_state_to_current_state()
         self.robot_model = self.panda.get_robot_model()
@@ -453,6 +637,11 @@ class BaseAction:
 
         if not self._execute_moveit_command(gripper_closing_result.trajectory):
             return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
 
         self.panda_arm.set_start_state_to_current_state()
         self.panda_arm.set_goal_state(configuration_name='ready')
@@ -464,7 +653,11 @@ class BaseAction:
 
         if not self._execute_moveit_command(robot_trajectory):
             return False
-        
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
         return True
 
     def _place(self):
@@ -506,6 +699,11 @@ class BaseAction:
         robot_trajectory = plan_result.trajectory
         if not self._execute_moveit_command(robot_trajectory):
             return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
 
         self.panda_gripper.set_start_state_to_current_state()
         self.robot_model = self.panda.get_robot_model()
@@ -520,6 +718,11 @@ class BaseAction:
             return False
         if not self._execute_moveit_command(gripper_openning_result.trajectory):
             return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
 
         self.panda_arm.set_start_state_to_current_state()
         self.panda_arm.set_goal_state(configuration_name='ready')
@@ -531,29 +734,235 @@ class BaseAction:
         robot_trajectory = plan_result.trajectory
         if not self._execute_moveit_command(robot_trajectory):
             return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
+        return True
 
+    def _pitch_retract(self, angle):
+        """Rotate the arm's joint_2 by the specified angle relative to current position.
+
+        Args:
+            angle: The angle to rotate joint_2 by (in radians)
+
+        Returns:
+            bool: True if execution succeeded, False otherwise
+        """
+
+        self.panda_arm.set_start_state_to_current_state()
+        current_state = self.panda_arm.get_start_state()
+
+        joint_group_name = self.moveit_component_prefix + 'arm'
+        current_joint_values = list(current_state.get_joint_group_positions(joint_group_name))
+        target_joint_values = current_joint_values.copy()
+        raw_new_val = current_joint_values[1] - float(angle)
+        new_val = max(-1.59, min(1.59, raw_new_val))
+        target_joint_values[1] = new_val
+
+        joint_trajectory = JointTrajectory()
+        joint_trajectory.joint_names = [
+            f'{self.moveit_component_prefix}joint1',
+            f'{self.moveit_component_prefix}joint2',
+            f'{self.moveit_component_prefix}joint3',
+            f'{self.moveit_component_prefix}joint4',
+            f'{self.moveit_component_prefix}joint5',
+            f'{self.moveit_component_prefix}joint6',
+            f'{self.moveit_component_prefix}joint7'
+        ]
+        num_points = 10  # Number of interpolation points
+        duration_total = 2.0  # Total duration in seconds
+
+        for i in range(num_points + 1):
+            point = JointTrajectoryPoint()
+            t = i / num_points
+            point_positions = [
+                current_joint_values[j] + t * (target_joint_values[j] - current_joint_values[j])
+                for j in range(7)
+            ]
+            point.positions = point_positions
+
+            if i == 0 or i == num_points:
+                point.velocities = [0.0] * 7
+            else:
+                point.velocities = [
+                    (target_joint_values[j] - current_joint_values[j]) / duration_total
+                    for j in range(7)
+                ]
+            total_t = t * duration_total
+            time_sec = int(total_t)
+            time_nsec = int((total_t - time_sec) * 1e9)
+            point.time_from_start = Duration(sec=time_sec, nanosec=time_nsec)
+
+            joint_trajectory.points.append(point)
+
+        robot_trajectory_msg = RobotTrajectoryMsg()
+        robot_trajectory_msg.joint_trajectory = joint_trajectory
+
+        robot_model = self.panda.get_robot_model()
+        robot_trajectory = RobotTrajectory(robot_model)
+        robot_trajectory.joint_model_group_name = joint_group_name
+
+        try:
+            robot_trajectory.set_robot_trajectory_msg(current_state, robot_trajectory_msg)
+        except Exception as e:
+            self.moveit_node.get_logger().error(f'Failed to set robot trajectory message: {e}')
+            return False
+        
+        self.moveit_node.get_logger().info('Sending the retreat to execute!! ')
+
+        if not self._execute_moveit_command(robot_trajectory):
+            self.moveit_node.get_logger().error('Failed to execute pitch retract trajectory')
+            return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
         return True
 
     def _execute_moveit_command(self, trajectory):
-        goal_msg = ExecuteTrajectory.Goal()
-        goal_msg.trajectory = trajectory.get_robot_trajectory_msg()
-
-        send_goal_future = self.execute_trajectory_client.send_goal_async(goal_msg)
-        rclpy.spin_until_future_complete(self.moveit_node, send_goal_future)
-        self.moveit_goal_handle = send_goal_future.result()
-        if not self.moveit_goal_handle or not self.moveit_goal_handle.accepted:
-            self.moveit_node.get_logger().warning(
-                'ExecuteTrajectory goal was rejected by server.'
+        """Execute a MoveIt trajectory using the appropriate action client.
+        
+        Args:
+            trajectory: The robot trajectory to execute
+            
+        Returns:
+            bool: True if execution succeeded, False otherwise
+        """
+        # Check if trajectory is for gripper or arm based on joint names
+        trajectory = trajectory.get_robot_trajectory_msg()
+        is_gripper = any(
+            'finger' in joint_name
+            for joint_name in trajectory.joint_trajectory.joint_names
+        )
+        
+        # Select the appropriate client based on prefix and part
+        if 'robot1_' in self.moveit_component_prefix:
+            if is_gripper:
+                client = self.r1_gripper_trajectory_client
+            else:
+                client = self.r1_joint_trajectory_client
+        elif 'robot2_' in self.moveit_component_prefix:
+            if is_gripper:
+                client = self.r2_gripper_trajectory_client
+            else:
+                client = self.r2_joint_trajectory_client
+        else:
+            error_msg = (
+                f'Unknown robot prefix: {self.moveit_component_prefix}'
             )
+            self.moveit_node.get_logger().error(error_msg)
+            return False
+
+        if not client.wait_for_server(timeout_sec=5.0):
+            self.moveit_node.get_logger().error('Action server not available')
+            return False
+
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory = trajectory.joint_trajectory
+
+        send_goal_future = client.send_goal_async(goal_msg)
+        
+        rclpy.spin_until_future_complete(
+            self.moveit_node, send_goal_future, timeout_sec=10.0
+        )
+        
+        if not send_goal_future.done():
+            self.moveit_node.get_logger().error('Send goal timeout')
+            return False
+
+        self.moveit_goal_handle = send_goal_future.result()
+
+        if not self.moveit_goal_handle or not self.moveit_goal_handle.accepted:
+            self.moveit_node.get_logger().error('Goal rejected by action server')
+            return False
+
+        self.moveit_result_future = self.moveit_goal_handle.get_result_async()
+
+        max_wait_time = 60.0
+        start_time = time.time()
+
+        while not self.moveit_result_future.done():
+            rclpy.spin_until_future_complete(
+                self.moveit_node, self.moveit_result_future, timeout_sec=0.5
+            )
+
+            if time.time() - start_time > max_wait_time:
+                self.moveit_node.get_logger().error('Trajectory execution timeout')
+                if self.moveit_goal_handle:
+                    try:
+                        self.moveit_goal_handle.cancel_goal_async()
+                    except BaseException:
+                        pass
+                return False
+
+        result = self.moveit_result_future.result()
+
+        if result is None:
+            self.moveit_node.get_logger().error('Trajectory execution result is None')
+            self.moveit_status = GoalStatus.STATUS_ABORTED
+            self.moveit_last_task_result = TaskResult.FAILED
+            self.moveit_node.get_logger().error('returning false!')
+            return False
+
+        self.moveit_status = result.status
+
+        if self.moveit_status == GoalStatus.STATUS_SUCCEEDED:
+            self.moveit_last_task_result = TaskResult.SUCCEEDED
+            return True
+        else:
+            error_msg = (
+                f'Trajectory execution failed with status: '
+                f'{self.moveit_status}'
+            )
+            self.moveit_node.get_logger().error(error_msg)
             self.moveit_last_task_result = TaskResult.FAILED
             return False
-        
-        self.moveit_result_future = self.moveit_goal_handle.get_result_async()
-        self.wait_for_completition()
-        return True
 
     def check_arm_collision(self):
         robot_model = self.panda.get_robot_model()
         self.panda_arm.set_start_state_to_current_state()
         scene = PlanningScene(robot_model)
         return scene.is_state_colliding(self.panda_arm.get_start_state(), 'robot2_arm')
+
+    def _on_configure_moveit(self):
+        self.panda_arm.set_start_state_to_current_state()
+        self.panda_arm.set_goal_state(configuration_name='ready')
+        plan_result = self.panda_arm.plan()
+
+        if not plan_result:
+            return False
+
+        robot_trajectory = plan_result.trajectory
+
+        if not self._execute_moveit_command(robot_trajectory):
+            return False
+        # self.wait_for_completition()
+        # status = self.check_for_result()
+        # self.moveit_node.get_logger().info(F'Current status {status}')
+        # if status != TaskResult.SUCCEEDED:
+        #     return False
+        return True
+
+    def _on_deactivate_moveit(self):
+        self.execute_action('pitch_retract', 0.78)
+
+    def _on_configure_nvagitaion(self):
+        ret = set_gz_pose('tiago', self.locations['robot_default'], 'plasys_house')
+        self.navigator.setInitialPose(self.locations['robot_default'])
+        return ret
+
+    def on_configure(self):
+        if self.use_nav:
+            return self._on_configure_nvagitaion()
+        elif self.use_moveit:
+            return self._on_configure_moveit()
+
+    def on_deactivate(self):
+        if self.use_nav:
+            # doesnt need i think
+            return True
+        elif self.use_moveit:
+            return self._on_deactivate_moveit()
