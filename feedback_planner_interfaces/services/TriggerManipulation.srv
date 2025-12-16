@@ -1,0 +1,4 @@
+string color
+bool is_colliding
+---
+bool success

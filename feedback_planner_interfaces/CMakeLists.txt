@@ -31,12 +31,13 @@ set(action_interfaces
 
 set(service_interfaces
   services/TriggerFeedback.srv
+  services/TriggerManipulation.srv
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
     # ${message_interfaces}
     ${service_interfaces}
-    ${action_interfaces}
+    # ${action_interfaces}
     DEPENDENCIES ${dependencies}
 )
 

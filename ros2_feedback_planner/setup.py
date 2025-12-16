@@ -30,6 +30,9 @@ setup(
             'planner_node = ros2_feedback_planner.planning.simple_planner:main',
             'metrics_manager_node = ros2_feedback_planner.metrics_manager:main',
             'manipulator_simulator = ros2_feedback_planner.manipulator_simulator:main',
+            'dual_data_gen = ros2_feedback_planner.dual_manipulator_data_generator:main',
+            'robot_controller = ros2_feedback_planner.robot_controller_node:main',
+            'scenario_coordinator = ros2_feedback_planner.scenario_coordinator:main',
         ],
     },
 )

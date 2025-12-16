@@ -49,7 +49,7 @@ class FeedbackNode(LifecycleNode):
                 'feedback_type').get_parameter_value().string_value
             if 'forecast' in self.feedback_type:
                 self.probability_threshold = self.get_parameter(
-                    self.feedback_type + 'probability_threshold').get_parameter_value().string_value
+                    self.feedback_type + '.probability_threshold').get_parameter_value().string_value
             self.forecast_system_prompt = self.get_parameter(
                 self.feedback_type + '.system_prompt').get_parameter_value().string_value
             image_topic = self.get_parameter(
@@ -243,7 +243,7 @@ async def main_loop(node, config):
                             accumulated_tokens = usage.total_token_count
                         if response is not None and response.text is not None:
                             buffer += response.text
-                            node.get_logger().fatal(f'LLM response: {response.text}')
+                            # node.get_logger().fatal(f'LLM response: {response.text}')
                             if 'forecast' in node.feedback_type.lower():
                                 if 'probability_of_failure' in response.text:
                                     match = re.search(
@@ -263,6 +263,7 @@ async def main_loop(node, config):
                     node.last_answer = buffer
 
                     if is_canceled:
+                        node.probability_threshold = 'likely'  # DELETE THISS!! OMGG
                         req = TriggerFeedback.Request()
                         req.feedback_input = node.last_answer
                         msg = Emptymsg()
@@ -276,7 +277,7 @@ async def main_loop(node, config):
         except ConnectionClosedError as e:
             error_msg = str(e)
             if 'token count exceeds' in error_msg or '1007' in error_msg:
-                node.get_logger().error(
+                node.get_logger().fatal(
                     f'Token limit exceeded (error 1007)! '
                     f'Last known count: {accumulated_tokens} tokens. '
                     f'Error: {error_msg}. Reconnecting...'
@@ -296,6 +297,67 @@ async def main_loop(node, config):
             await asyncio.sleep(0.5)
 
 
+def offline_main_loop(node):
+    """
+    Synchronous main loop for local/offline inference.
+    Uses the fast PyTorch-based inference without async overhead.
+    """
+    while True:
+        try:
+            if node.last_image is None or node.last_prompt is None or not node.is_executing:
+                time.sleep(0.25)
+                continue
+
+            # Run synchronous inference
+            start_time = time.time()
+            answer = node.llm.generate(prompt=node.last_prompt, image=node.last_image)
+            inference_time = time.time() - start_time
+            
+            node.get_logger().info(f'Offline inference completed in {inference_time:.3f}s')
+            node.last_answer = answer
+
+            # Parse the response based on feedback type
+            is_canceled = False
+            
+            if 'forecast' in node.feedback_type.lower():
+                # Look for probability_of_failure in the response
+                match = re.search(
+                    r'"probability_of_failure":\s*"([^"]+)"',
+                    answer
+                )
+                if match:
+                    prob = str(match.group(1))
+                    node.get_logger().fatal(f'Failure probability: {prob}')
+                    if node.probability_threshold in prob:
+                        is_canceled = True
+                        
+            elif 'doremi' in node.feedback_type.lower():
+                if 'yes' in answer.lower():
+                    is_canceled = True
+
+            # Cancel action if needed
+            if is_canceled:
+                node.probability_threshold = 'likely'  # DELETE THISS!! OMGG
+                req = TriggerFeedback.Request()
+                req.feedback_input = node.last_answer
+                msg = Emptymsg()
+                node.replan_pub.publish(msg)
+                node.get_logger().fatal(
+                    'Canceling action due to high failure probability'
+                )
+                node.cancel_action_client.call_async(req)
+            
+            # Small sleep to avoid spinning too fast
+            time.sleep(0.25)
+
+        except KeyboardInterrupt:
+            node.get_logger().info('Keyboard interrupt in offline loop')
+            break
+        except Exception as e:
+            node.get_logger().error(f'Error in offline_main_loop: {e}')
+            time.sleep(0.5)
+
+
 def ros_spin_thread(node):
     executor = MultiThreadedExecutor()
     executor.add_node(node)
@@ -306,35 +368,40 @@ def main(args=None):
     # Fix for Python 3.12+ event loop policy with threading
     import sys
     if sys.version_info >= (3, 12):
-        # Use WindowsSelectorEventLoopPolicy equivalent for Linux
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except AttributeError:
-            # On Linux, use the default policy explicitly
             asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
     
     rclpy.init(args=args)
     node = FeedbackNode(automatically_declare_parameters_from_overrides=True)
     node.get_logger().info('Node Constructed')
-    # Create event loop explicitly before starting threads
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     
     ros_thread = threading.Thread(target=ros_spin_thread, args=(node,), daemon=True)
     ros_thread.start()
-    config = {'response_modalities': ['TEXT']}
 
     try:
+        # Wait for configuration and activation
         while not hasattr(node, 'llm') and not node.is_activated:
             node.get_logger().info('Waiting to be configured and activated',
                                    throttle_duration_sec=5)
             time.sleep(0.5)
-        # Use the explicit loop instead of asyncio.run()
-        loop.run_until_complete(main_loop(node, config))
+        
+        # Choose the appropriate loop based on vendor
+        if node.vendor == 'local':
+            node.get_logger().fatal('Starting OFFLINE main loop for local inference')
+            offline_main_loop(node)
+        else:
+            node.get_logger().fatal(f'Starting ASYNC main loop for {node.vendor} vendor')
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            config = {'response_modalities': ['TEXT']}
+            loop.run_until_complete(main_loop(node, config))
+            loop.close()
+            
     except KeyboardInterrupt:
         node.get_logger().info('Keyboard interrupt received')
     finally:
-        loop.close()
         node.trigger_deactivate()
         node.trigger_cleanup()
         node.destroy_node()

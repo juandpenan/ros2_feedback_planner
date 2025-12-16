@@ -2,10 +2,8 @@
 """This module provides an abstract base client for interfacing with OpenAI, Gemini, or a local Llama model."""
 
 import os
-import fnmatch
 from openai import OpenAI
 from abc import ABC
-from llama_cpp import Llama
 from google import genai
 import base64
 from io import BytesIO
@@ -15,7 +13,6 @@ from pydantic import BaseModel
 import json
 import asyncio
 from datetime import datetime
-from pathlib import Path
 from contextlib import asynccontextmanager
 
 
@@ -64,53 +61,41 @@ class BaseClient(ABC):
         self.max_tokens = max_tokens
 
         if self.vendor == 'local':
+            # Use fast PyTorch inference with transformers instead of llama.cpp
             try:
-                from huggingface_hub import HfFileSystem
-                from huggingface_hub.utils import validate_repo_id
+                import torch
+                from transformers import AutoProcessor, Idefics3ForConditionalGeneration
             except ImportError:
                 raise ImportError(
-                    'Llama.from_pretrained requires the huggingface-hub package. '
-                    'You can install it with `pip install huggingface-hub`.'
+                    'Local inference requires torch and transformers. '
+                    'You can install them with `pip install torch transformers`.'
                 )
-            validate_repo_id(model_name)
-
-            hffs = HfFileSystem()
-
-            files = [
-                file['name'] if isinstance(file, dict) else file
-                for file in hffs.ls(model_name, recursive=True)
-            ]
-
-            file_list = []
-
-            for file in files:
-                rel_path = Path(file).relative_to(model_name)
-                file_list.append(str(rel_path))
-
-            # find the only/first shard file:
-            matching_files = [file for file in file_list if fnmatch.fnmatch(file, '*.gguf')]
-
-            if len(matching_files) == 0:
-                raise ValueError(
-                    f'No file found in {model_name} that match *.gguf\n\n'
-                    f'Available Files:\n{json.dumps(file_list)}'
-                )
-
-            self.client = Llama.from_pretrained(
-                repo_id=model_name,
-                filename=matching_files[0],
-                n_gpu_layers=24,      # Partial GPU offload (enough to speed up, fits 8GB)
-                n_batch=2048,         # Large batch but safe for 8GB
-                n_ctx=2048,           # Typical max context size
-
-                n_threads=12,         # Use CPU cores for other work
-                n_threads_batch=12,
-
-                use_mlock=True,
-                use_mmap=True,
-                verbose=False
+            
+            # Load processor
+            self.processor = AutoProcessor.from_pretrained(model_name)
+            
+            # Load model with FP16 optimization
+            print(f"Loading local model: {model_name} with FP16...")
+            self.client = Idefics3ForConditionalGeneration.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16,  # FP16 for speed
+                device_map="auto",
+                low_cpu_mem_usage=True
             )
+            self.client.eval()
+            
+            # Compile model for faster inference (PyTorch 2.0+)
+            if hasattr(torch, 'compile'):
+                print("Compiling model with torch.compile()...")
+                try:
+                    self.client = torch.compile(self.client, mode="reduce-overhead")
+                    print("✓ Model compiled successfully")
+                except Exception as e:
+                    print(f"⚠ Compilation failed: {e}")
+                    print("  Continuing without compilation")
+            
             self.history = []
+            print("✓ Local model ready for inference")
         elif self.vendor == 'openai':
             self.client = OpenAI(api_key=os.environ[api_key_variable])
         elif self.vendor == 'gemini':
@@ -123,46 +108,88 @@ class BaseClient(ABC):
             # used only for 'real time gemini features'
             self.live_client = genai.Client(
                 api_key=os.environ[api_key_variable])
-            self.client = genai.Client(
-                api_key=os.environ[api_key_variable]).chats.create(model=self.model_name,
-                                                                   config=config)
+            self._gemini_base_client = genai.Client(
+                api_key=os.environ[api_key_variable])
+            self.client = self._gemini_base_client.chats.create(model=self.model_name,
+                                                                config=config)
         else:
             raise ValueError(f'Unknown vendor: {vendor}')
 
     def generate(self, prompt: str, image: PIL.Image = None) -> str:
         if self.vendor == 'local':
+            import torch
 
-            self.history.append(
-                {
-                    'role': 'user',
-                    'content': prompt
-                }
-            )
+            # Format messages for chat template
+            messages = []
 
+            # Add system prompt if set
+            if self._system_prompt:
+                messages.append({
+                    'role': 'system',
+                    'content': self._system_prompt
+                })
+
+            # Add user message with image if provided
+            content = []
             if image is not None:
-                buffered = BytesIO()
-                image.save(buffered, format='PNG')
-                img_str = base64.b64encode(buffered.getvalue()).decode()
-                self.history[-1]['content'] = [
-                    {'type': 'text', 'text': prompt},
-                    {'type': 'image_url', 'image_url': f'data:image/png;base64,{img_str}'}
-                ]
+                content.append({'type': 'image'})
+            content.append({'type': 'text', 'text': prompt})
 
-            response = self.client.create_chat_completion(
-                messages=self.history,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                top_k=self.top_k,
-                response_format={
-                    'type': 'json_object',
-                    'schema': self._output_format_class
-                } if self._output_format_class else None,
+            messages.append({
+                'role': 'user',
+                'content': content
+            })
+
+            # Apply chat template
+            prompt_text = self.processor.apply_chat_template(
+                messages, 
+                add_generation_prompt=True
             )
-            # self.history += [{'role': el.role, 'content': el.content} for el in response.output]
 
+            # Prepare image list
+            images = [image] if image is not None else None
+
+            # Process inputs
+            inputs = self.processor(
+                text=prompt_text, 
+                images=images, 
+                return_tensors="pt"
+            )
+            inputs = {k: v.to(self.client.device) for k, v in inputs.items()}
+
+            # Generate with optimizations
+            with torch.inference_mode():  # Faster than no_grad
+                generated_ids = self.client.generate(
+                    **inputs,
+                    max_new_tokens=self.max_tokens,
+                    do_sample=self.temperature > 0,
+                    temperature=self.temperature if self.temperature > 0 else None,
+                    top_p=self.top_p if self.temperature > 0 else None,
+                    use_cache=True  # Enable KV cache
+                )
+
+            generated_text = self.processor.batch_decode(
+                generated_ids,
+                skip_special_tokens=True
+            )[0]
+            
+            if "Assistant:" in generated_text:
+                response = generated_text.split("Assistant:")[-1].strip()
+            else:
+                response = generated_text.strip()
+            
             self._last_response = response
-
-            return self._last_response
+            
+            self.history.append({
+                'role': 'user',
+                'content': prompt
+            })
+            self.history.append({
+                'role': 'assistant',
+                'content': response
+            })
+            
+            return response
 
         elif self.vendor == 'openai':
 

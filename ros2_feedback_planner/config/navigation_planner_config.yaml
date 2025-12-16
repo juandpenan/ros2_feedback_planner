@@ -3,8 +3,8 @@ planner_node:
     llm_client:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
-      model_name: 'gemini-2.5-flash'
-      temperature: 1.0
+      model_name: 'gemini-flash-latest'
+      temperature: 0.5
       max_tokens: 6000
     action_backend: 'nav2'
     planner_type: 'monologue' # doremi, monologue todo(juandpenan): rename current to method name when name is clear
@@ -26,7 +26,7 @@ planner_node:
           - move_right(distance_in_m): Moves the robot laterally to its right, typically by rotating and then moving forward along its local negative Y-axis.
           - move_left(distance_in_m): Moves the robot laterally to its left, typically by rotating and then moving forward along its local positive Y-axis.
           - turn_left(angle_in_radians): Rotates the robot anti-clockwise  I.E if the robot turns left 90 the X-axis will be located where the Y-axis  is now. 
-          - turn_right(angle_in_radians): Rotates the robot clockwise. I.E if the robot turns right 90 the Y-axis will be located where the X-axis is now. 
+          - turn_right(angle_in_radians): Rotates the robot clockwise. I.E if the robot turns right 90 the Y-axis will be located where the X-axis is now.
           - done()
         Your Task:
             Analyze and generate a step-by-step navigation plan using the available actions to safely and efficiently reach the bed. Present the plan as a numbered list in this format:
@@ -34,6 +34,8 @@ planner_node:
             Always include the done() action as the final step when the goal is reached.
             Additionally, for the first action, predict any possible future preconditions that might fail before or during the execution of that action.
             Output these predicted future preconditions as a separate list after the plan.
+            Lastly, you must select a fallback action that can be executed immediately whenever replanning is required, to keep the robot in a safe state while a new plan is being generated.
+
 
         Format your response as:
 
@@ -45,7 +47,8 @@ planner_node:
           Future Preconditions at Risk:
           - Action1: precondition "path_clear" may fail due to obstacle detected ahead.
           - None: if no precondition at risk found for the task
-
+          Fallback action:
+          action(parameter)
 
          Examples:
 
@@ -56,6 +59,8 @@ planner_node:
 
          Future Preconditions:
           - move_to(office_desk): path_clear
+         Fallback action:
+          move_backwards(0.35)
 
         You are replanning. The last action executed was: move_to(office_desk).
         The feedback received for this action was: The action had to be canceled due to the preconditions will not hold
@@ -63,12 +68,13 @@ planner_node:
         Use this information to decide the next best step for the robot to reach its goal.
 
           Plan:
-          1. move_backwards(0.2)
-          2. move_to(office_desk)
+          1. move_to(office_desk)
           3. done()
 
           Future Preconditions:
-          - move_backwards(0.2): None
+          - move_to(office_desk): path_clear
+          Fallback action:
+          move_backwards(0.35)
         
         You are replanning. The last action executed was: move_backwards(0.2).
         The feedback received for this action was: The action was successfully executed
@@ -82,6 +88,9 @@ planner_node:
           Future Preconditions:
           - move_to(office_desk): path_clear
 
+          Fallback action:
+          move_backwards(0.35)
+
           You are replanning. The last action executed was: move_to(office_desk).
         The feedback received for this action was: The action was successfully executed
 
@@ -93,6 +102,9 @@ planner_node:
           Future Preconditions:
           - done(): None
 
+          Fallback action:
+          move_backwards(0.35)
+
 
          Sofa
          Plan:
@@ -101,6 +113,8 @@ planner_node:
 
          Future Preconditions:
           - move_to(sofa): path_clear
+         Fallback action:
+          move_backwards(0.35)
          
           You are replanning. The last action executed was: move_to(sofa)
           The feedback received for this action was: The action was successfully executed
@@ -109,6 +123,8 @@ planner_node:
           1.done()
           Future Preconditions:
           - done(): None
+          Fallback action:
+          move_backwards(0.35)
          
          Shower
          Plan:
@@ -117,6 +133,8 @@ planner_node:
 
          Future Preconditions:
           - move_to(shower): path_clear
+         Fallback action:
+          move_backwards(0.35)
 
           You are replanning. The last action executed was: move_to(shower).
           The feedback received for this action was: 'The action was successfully executed'
@@ -127,6 +145,8 @@ planner_node:
 
          Future Preconditions:
           - done(): None
+         Fallback action:
+          move_backwards(0.35)
 
          Fridge
          Plan:
@@ -135,6 +155,8 @@ planner_node:
 
           Future Preconditions:
           - move_to(fridge): path_clear
+          Fallback action:
+          move_backwards(0.35)
           
           You are replanning. The last action executed was: move_to(fridge).
           The feedback received for this action was: o the preconditions will not hold
@@ -142,12 +164,13 @@ planner_node:
           Use this information to decide the next best step for the robot to reach its goal.
           
           Plan:
-          1. move_backwards(0.2): None
-          2. move_to(fridge)
+          1. move_to(fridge)
           3. done()
 
           Future Preconditions:
-          - move_backwards(0.2): None
+          - move_to(fridge): path_clear
+          Fallback action:
+          move_backwards(0.35)
 
           You are replanning. The last action executed was: move_backwards(0.2).
           The feedback received for this action was: The action was successfully executed
@@ -159,6 +182,8 @@ planner_node:
 
           Future Preconditions:
           - move_to(fridge): path_clear
+          Fallback action:
+          move_backwards(0.35)
 
          Plan:
          1. move_to(fridge)
@@ -166,6 +191,8 @@ planner_node:
 
           Future Preconditions:
           - move_to(fridge): path_clear
+          Fallback action:
+          move_backwards(0.35)
           
           You are replanning. The last action executed was: move_to(fridge).
           The feedback received for this action was: was successfully executed
@@ -175,6 +202,8 @@ planner_node:
 
         Future Preconditions:
           - done(): None
+        Fallback action:
+          move_backwards(0.35)
 
       
       # available plugins are last_action, feedback_output, 
@@ -517,11 +546,11 @@ feedback_node:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
       model_name: 'gemini-live-2.5-flash-preview' #'gemini-live-2.5-flash-preview' gemini-2.0-flash-live-001
-      temperature: 0.0
+      temperature: 1.0
       max_tokens: 750
     feedback_type: 'monologue'  # doremi monologue forecast
     forecast:
-      probability_threshold: likely
+      probability_threshold: neutral
       system_prompt: |
         You are assisting a robot by analyzing and FORECASTING its environment to determine if people (humans) present or moving within the scene could impact the success of its ongoing action.
       image_topic: '/head_front_camera/image'
@@ -532,21 +561,78 @@ feedback_node:
 
           Consider the current scene as observed from the mobile robot’s camera, and analyze the predicted future states of all dynamic agents (e.g., people, animals, vehicles, or any moving entities) within the NEXT SECOND.
 
-          IMPORTANT: Only answer "Yes" if you are absolutely certain—based on strong, clear evidence—that a dynamic agent will violate the precondition in the predicted future state. Do NOT answer "Yes" for unlikely, ambiguous, or low-probability risks. If there is any reasonable doubt, answer "No".
+          IMPORTANT: Only answer "very likely" if you are absolutely certain—based on strong, clear evidence—that a dynamic agent will violate the precondition in the predicted future state. Do NOT answer "very likely" for unlikely, ambiguous, or low-probability risks.
 
-          Ask yourself for each precondition: Is there a high probability, with clear and convincing evidence, that the predicted future states of any dynamic agent will interfere with the predicted future state of the currently executing action within the NEXT SECOND, causing that precondition to fail? Only answer "Yes" if you are sure the violation will occur.
+          Ask yourself for each precondition: Is there a high probability, with clear and convincing evidence, that the predicted future states of any dynamic agent will interfere with the predicted future state of the currently executing action within the NEXT SECOND, causing that precondition to fail? 
+          
+          Assess the risk level based on these predictions. Use "likely" or "very likely" if motions create a clear risk of interference.
 
-          Answer format:
-          - For each precondition, start your answer with "Yes" only if failure is highly likely and certain due to a dynamic agent, followed by a brief explanation.
-          - Otherwise, start with "No" if the precondition will hold or if failure is uncertain or unlikely, followed by a brief explanation.
+          Use "neutral" or "improbable" if agents are nearby but their predicted paths are clearly diverging or non-conflicting.
 
-          Example answers:
-          - path_clear(): Yes, The action had to be canceled due to the preconditions will not hold
-            within the next second
-          - arm_free: No, no dynamic agents are expected to interfere with the robot’s arm movement.
-          - path_clear(): No, a person is nearby but not moving toward the robot’s path.
-          - path_clear(): No, a person is nearby but going away from the robot’s path.
-          Answer:
+          Failure Risk Categories: "very improbable", "improbable", "neutral", "likely", "very likely"
+
+        Answer Format: Output ONLY a valid JSON object with the following structure. Do not include any text before or after the JSON.
+
+          {
+            "preconditions": [
+              {
+                "name": "precondition_name",
+                "probability_of_failure": "probability_category",
+                "explanation": "brief explanation of the risk (e.g., proximity, path overlap, occlusion)"
+              }
+            ]
+          }
+
+          Example JSON Output:
+          {
+            "preconditions": [
+              {
+                "name": "path_clear",
+                "probability_of_failure": "very likely",
+                "explanation": "A person is walking directly toward the robot's path; collision is imminent within the next second."
+              }
+            ]
+          }
+
+          {
+            "preconditions": [
+              {
+                "name": "path_clear",
+                "probability_of_failure": "likely",
+                "explanation": "A person is moving laterally and may enter the robot's navigation path within the next second."
+              }
+            ]
+          }
+
+          {
+            "preconditions": [
+              {
+                "name": "path_clear",
+                "probability_of_failure": "neutral",
+                "explanation": "A person is present in the vicinity but their trajectory is parallel to the robot's path."
+              }
+            ]
+          }
+
+          {
+            "preconditions": [
+              {
+                "name": "path_clear",
+                "probability_of_failure": "improbable",
+                "explanation": "A person is nearby but moving away from the robot's planned trajectory."
+              }
+            ]
+          }
+
+          {
+            "preconditions": [
+              {
+                "name": "path_clear",
+                "probability_of_failure": "very improbable",
+                "explanation": "No dynamic agents are near the navigation path; interference is extremely unlikely."
+              }
+            ]
+          }
     monologue:
       system_prompt: |
         You are assisting a robot by analyzing its environment to analize if an action was successfully executed.
@@ -596,7 +682,7 @@ metrics_manager_node:
   ros__parameters:
     data_path: /home/juan/experiments
     test_type: 'navigation' #nav manipulation
-    strategy: 'monologue'
+    strategy: 'monologue' 
     timeout_seconds: 350.0 # less than 6 minutes to sucess
     navigation:
       target_frame: 'agent0'
@@ -607,12 +693,12 @@ metrics_manager_node:
         y: 4.54
         min_yaw: 0.46 # has to be greater than absolute value of yaw
       agent_safe_pose:
-        x: -4.19
-        y: 2.12
-        min_yaw: 1.52 # has to be greater than absolute value of yaw
+        x: -8.33
+        y: 1.2
+        min_yaw: -2.8 # has to be greater than absolute value of yaw
       # agent_pose_to_start:
       #   x: 0.54
       #   y: -0.89
       #   min_yaw: 0.0 # has to be greater than absolute value of yaw
       agent_pose_radius: 0.25 # in m
-      probability_of_colission: 0.2
+      probability_of_colission: 1.0

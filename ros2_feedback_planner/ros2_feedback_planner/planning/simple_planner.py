@@ -221,7 +221,6 @@ class PlannerNode(LifecycleNode):
         self.on_success_client = self.create_client(
             Empty,
             'on_success',
-            callback_group=self.cb_group
         )
 
         if self.feedback_mode == FeedbackMode.ONCE:
@@ -406,6 +405,7 @@ class PlannerNode(LifecycleNode):
                 self.get_logger().fatal(f'New plan: {self.last_plan}')
                 self.fallback_action = str(josn_result['fallback_action'])
                 self.feedback_input = str(josn_result['feedback_input'])
+                self.action_manager.wait_for_completition()
 
             elif action_result == TaskResult.SUCCEEDED:
                 self.get_logger().fatal(f'Execution of : {action_name} was sucessfull')
@@ -493,7 +493,7 @@ class PlannerNode(LifecycleNode):
                     self.get_logger().info('Planner deactivated while waiting for feedback')
                     return
                 if time.time() - start_time > timeout_sec:
-                    self.get_logger().error('Timeout waiting for feedback response')
+                    self.get_logger().fatal('Timeout waiting for feedback response')
                     return
             
             result = future.result()
@@ -544,7 +544,6 @@ class PlannerNode(LifecycleNode):
                 self.destroy_timer(self.timer)
                 self.timer = None
 
-            
             # Prevent multiple success calls from concurrent executions
             if self.success_called:
                 self.get_logger().warn('Success already called, skipping duplicate call')

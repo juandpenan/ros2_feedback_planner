@@ -143,12 +143,12 @@ def is_on_table(cube_name: str) -> bool:
         True if cube is within table boundaries (±2 cm), False otherwise
     """
     # Table boundaries with ±2 cm (0.02 m) tolerance
-    x_min = 0.65 - 0.02
+    x_min = 0.61 - 0.02
     x_max = 0.95 + 0.02
-    y_min = -0.25 - 0.02
-    y_max = 0.25 + 0.02
-    z_min = 0.50  # Slightly below table surface
-    z_max = 0.60  # Slightly above initial cube height
+    y_min = -0.31 - 0.02
+    y_max = 0.31 + 0.02
+    z_min = 0.49  # Slightly below table surface
+    z_max = 0.55  # Slightly above initial cube height
 
     # Get pose from Gazebo
     pose = get_gz_pose(f'cube_{cube_name}', world_name='default')
@@ -177,3 +177,99 @@ def is_on_table(cube_name: str) -> bool:
         )
 
     return is_within
+
+
+def is_in_recipient(
+    cube_name: str,
+    recipient_name: str,
+    world_name: str = 'default',
+    tolerance: float = 0.02,
+) -> bool:
+    """Check if a cube is inside a recipient (bowl or open box).
+
+    Supported recipients (by Gazebo entity name):
+    - 'curver_storage_bin2': Red bowl (cylindrical). Diameter=0.28 m, height=0.15 m.
+    - 'curver_storage_bin1': Black box (axis-aligned). Dimensions from actions.py
+
+    The check uses the cube's current Gazebo pose and tests if its position
+    lies within the recipient's interior bounds with a small tolerance.
+
+    Args:
+        cube_name: Cube color/name suffix used in Gazebo entity ('cube_{name}').
+        recipient_name: One of 'curver_storage_bin1' (box) or 'curver_storage_bin2' (bowl).
+        world_name: Gazebo world name.
+        tolerance: Extra margin (meters) to account for model sizes/noise.
+
+    Returns:
+        True if the cube is within the recipient bounds, False otherwise.
+    """
+    # Get cube pose
+    pose = get_gz_pose(f'cube_{cube_name}', world_name=world_name)
+    if pose is None:
+        print(f'Could not get pose for cube_{cube_name}')
+        return False
+
+    cx = pose.pose.position.x
+    cy = pose.pose.position.y
+    cz = pose.pose.position.z
+
+    recipient = recipient_name
+
+
+    if recipient == 'curver_storage_bin1':
+        # Black box ("black_basket" collision object in actions.py)
+        # Hardcoded pose and dimensions from actions.py
+        # Position (0.55, -0.5, 0.59) is the CENTER of the box
+        height = 0.135
+        depth_x = 0.29
+        width_y = 0.20
+        rx, ry, rz = 0.55, -0.5, 0.52
+        x_min = rx - depth_x / 2.0 - tolerance
+        x_max = rx + depth_x / 2.0 + tolerance
+        y_min = ry - width_y / 2.0 - tolerance
+        y_max = ry + width_y / 2.0 + tolerance
+        z_min = rz - height / 2.0 - tolerance
+        z_max = rz + height / 2.0 + tolerance
+        return (x_min <= cx <= x_max) and (y_min <= cy <= y_max) and (z_min <= cz <= z_max)
+
+    if recipient == 'curver_storage_bin2':
+        # Red bowl ("red_basket" collision object in actions.py)
+        # Hardcoded pose and dimensions from actions.py
+        # Position (1.01, 0.55, 0.6) is the CENTER of the box
+        radius = 0.29 / 2.0  # dimensions [0.29, 0.29, 0.16]
+        height = 0.16
+        rx, ry, rz = 1.01, 0.55, 0.52
+        r = ((cx - rx) ** 2 + (cy - ry) ** 2) ** 0.5
+        within_radius = r <= (radius + tolerance)
+        within_height = (rz - height / 2.0 - tolerance) <= cz <= (rz + height / 2.0 + tolerance)
+        return within_radius and within_height
+
+    print(f'Unknown recipient: {recipient_name}')
+    return False
+
+
+def is_in_any_recipient(
+    cube_name: str,
+    world_name: str = 'default',
+    tolerance: float = 0.02,
+) -> bool:
+    """Check if a cube is inside any known recipient.
+
+    Checks 'curver_storage_bin1' (box) and 'curver_storage_bin2' (bowl).
+
+    Args:
+        cube_name: Cube color/name suffix used in Gazebo entity ('cube_{name}').
+        world_name: Gazebo world name.
+        tolerance: Extra margin (meters) to account for model sizes/noise.
+
+    Returns:
+        True if cube is inside any recipient, False otherwise.
+    """
+    recipients = [
+        'curver_storage_bin2',  # Red bowl
+        'curver_storage_bin1',  # Black box
+    ]
+    for r in recipients:
+        if is_in_recipient(cube_name, r, world_name=world_name, tolerance=tolerance):
+            return True
+    return False

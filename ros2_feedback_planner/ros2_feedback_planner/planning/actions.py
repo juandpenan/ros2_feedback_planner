@@ -9,7 +9,8 @@ from moveit.core.planning_scene import PlanningScene
 from ros2_feedback_planner.utils import get_gz_pose, is_on_table, set_gz_pose
 from moveit.utils import create_params_file_from_dict
 from ament_index_python.packages import get_package_share_directory
-from moveit_msgs.msg import CollisionObject
+from moveit_msgs.msg import CollisionObject, AllowedCollisionMatrix, AllowedCollisionEntry
+from moveit_msgs.srv import ApplyPlanningScene
 from shape_msgs.msg import SolidPrimitive
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
@@ -24,6 +25,7 @@ from moveit_msgs.action import ExecuteTrajectory
 from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
 
+
 class BaseAction:
     """BaseAction provides robot navigation actions using nav2_simple_commander."""
 
@@ -32,6 +34,7 @@ class BaseAction:
 
         available backends are: nav2 or moveit
         """
+        
         if backend == 'nav2':
             self.use_nav = True
             self.use_moveit = False
@@ -61,6 +64,8 @@ class BaseAction:
             self.all_methods = {
                 'pick': self._pick,
                 'place': self._place,
+                'place_secure': self._place_secure,
+                'pick_secure': self._pick_secure,
                 'pitch_retract': self._pitch_retract,
                 'done': self._done
             }
@@ -104,8 +109,12 @@ class BaseAction:
             panda_config.update({'use_sim_time': True})
             file = create_params_file_from_dict(panda_config, '/**')
             self.moveit_component_prefix = 'robot1_'
-            self.panda = MoveItPy(node_name='moveit_panda_py', launch_params_filepaths=[file])
-            self.moveit_node = Node('moveit_node')
+            unique_id = str(time.time()).replace('.', '_')
+            self.panda = MoveItPy(
+                node_name=f'moveit_panda_py_{unique_id}',
+                launch_params_filepaths=[file]
+            )
+            self.moveit_node = Node(f'moveit_node_{unique_id}')
 
             self.execute_trajectory_client = ActionClient(self.moveit_node,
                                                           ExecuteTrajectory,
@@ -185,7 +194,7 @@ class BaseAction:
 
         box_pose = Pose()
         box_pose.position.x = 1.01
-        box_pose.position.y = 0.5
+        box_pose.position.y = 0.55
         box_pose.position.z = 0.6
 
         box = SolidPrimitive()
@@ -218,6 +227,207 @@ class BaseAction:
 
         scene.apply_collision_object(collision_object)
         scene.current_state.update()
+
+    def allow_collision(self, link_a, link_b=None):
+        """Allow collision between two links or between a link and all others.
+        
+        Args:
+            link_a: First link name (e.g., 'robot1_link7')
+            link_b: Second link name (e.g., 'robot2_link7'). If None, allows 
+                   collision between link_a and all links.
+        
+        Returns:
+            bool: True if ACM was successfully updated, False otherwise
+        """
+        if not self.use_moveit:
+            self.moveit_node.get_logger().warning(
+                'allow_collision only works with moveit backend'
+            )
+            return False
+        
+        from moveit_msgs.msg import PlanningScene
+        
+        acm = AllowedCollisionMatrix()
+        
+        if link_b is None:
+            # Allow collision between link_a and all links
+            acm.entry_names = [link_a]
+            entry = AllowedCollisionEntry()
+            entry.enabled = [True]
+            acm.entry_values = [entry]
+            acm.default_entry_names = [link_a]
+            acm.default_entry_values = [True]
+        else:
+            # Allow collision between specific link pair
+            acm.entry_names = [link_a, link_b]
+            e0 = AllowedCollisionEntry()
+            e0.enabled = [True, True]
+            e1 = AllowedCollisionEntry()
+            e1.enabled = [True, True]
+            acm.entry_values = [e0, e1]
+        
+        ps = PlanningScene()
+        ps.is_diff = True
+        ps.allowed_collision_matrix = acm
+        
+        # Apply via planning scene monitor
+        planning_scene_monitor = self.panda.get_planning_scene_monitor()
+        with planning_scene_monitor.read_write() as scene:
+            # Apply the ACM directly to the scene
+            for i, link_i in enumerate(acm.entry_names):
+                for j, link_j in enumerate(acm.entry_names):
+                    if i < len(acm.entry_values) and j < len(acm.entry_values[i].enabled):
+                        if acm.entry_values[i].enabled[j]:
+                            scene.allowed_collision_matrix.set_entry(link_i, link_j, True)
+        
+        self.moveit_node.get_logger().info(
+            f'Allowed collision between {link_a} and {link_b or "all links"}'
+        )
+        return True
+    
+    def disallow_collision(self, link_a, link_b=None):
+        """Disallow collision between two links or between a link and all others.
+        
+        Args:
+            link_a: First link name (e.g., 'robot1_link7')
+            link_b: Second link name (e.g., 'robot2_link7'). If None, disallows 
+                   collision between link_a and all links.
+        
+        Returns:
+            bool: True if ACM was successfully updated, False otherwise
+        """
+        if not self.use_moveit:
+            self.moveit_node.get_logger().warning(
+                'disallow_collision only works with moveit backend'
+            )
+            return False
+        
+        from moveit_msgs.msg import PlanningScene
+        
+        acm = AllowedCollisionMatrix()
+        
+        if link_b is None:
+            # Disallow collision between link_a and all links
+            acm.entry_names = [link_a]
+            entry = AllowedCollisionEntry()
+            entry.enabled = [False]
+            acm.entry_values = [entry]
+            acm.default_entry_names = [link_a]
+            acm.default_entry_values = [False]
+        else:
+            # Disallow collision between specific link pair
+            acm.entry_names = [link_a, link_b]
+            e0 = AllowedCollisionEntry()
+            e0.enabled = [False, False]
+            e1 = AllowedCollisionEntry()
+            e1.enabled = [False, False]
+            acm.entry_values = [e0, e1]
+        
+        ps = PlanningScene()
+        ps.is_diff = True
+        ps.allowed_collision_matrix = acm
+        
+        # Apply via planning scene monitor
+        planning_scene_monitor = self.panda.get_planning_scene_monitor()
+        with planning_scene_monitor.read_write() as scene:
+            # Apply the ACM directly to the scene
+            for i, link_i in enumerate(acm.entry_names):
+                for j, link_j in enumerate(acm.entry_names):
+                    if i < len(acm.entry_values) and j < len(acm.entry_values[i].enabled):
+                        if not acm.entry_values[i].enabled[j]:
+                            scene.allowed_collision_matrix.set_entry(link_i, link_j, False)
+        
+        self.moveit_node.get_logger().info(
+            f'Disallowed collision between {link_a} and {link_b or "all links"}'
+        )
+        return True
+    
+    def allow_robot_collision(self, robot1_prefix='robot1_', robot2_prefix='robot2_'):
+        """Allow collision between all links of two robots.
+        
+        This is a convenience method that allows collision between all arm links
+        of two robots. Use with caution as it disables collision safety.
+        
+        Args:
+            robot1_prefix: Prefix for first robot (default: 'robot1_')
+            robot2_prefix: Prefix for second robot (default: 'robot2_')
+        
+        Returns:
+            bool: True if ACM was successfully updated, False otherwise
+        """
+        if not self.use_moveit:
+            self.moveit_node.get_logger().warning(
+                'allow_robot_collision only works with moveit backend'
+            )
+            return False
+        
+        # Get robot model to find all links
+        robot_model = self.panda.get_robot_model()
+        
+        # Get all link names for both robots
+        r1_links = []
+        r2_links = []
+        
+        for link_name in robot_model.link_model_names:
+            if link_name.startswith(robot1_prefix):
+                r1_links.append(link_name)
+            elif link_name.startswith(robot2_prefix):
+                r2_links.append(link_name)
+        
+        if not r1_links or not r2_links:
+            self.moveit_node.get_logger().error(
+                f'Could not find links for {robot1_prefix} or {robot2_prefix}'
+            )
+            return False
+        
+        self.moveit_node.get_logger().info(
+            f'Allowing collision between {len(r1_links)} links of {robot1_prefix} '
+            f'and {len(r2_links)} links of {robot2_prefix}'
+        )
+        
+        from moveit_msgs.msg import PlanningScene
+        
+        # Build ACM with all robot1 and robot2 links
+        acm = AllowedCollisionMatrix()
+        acm.entry_names = r1_links + r2_links
+        
+        # Create matrix: allow collisions only between robot1 and robot2 links
+        total_links = len(r1_links) + len(r2_links)
+        for i, link_i in enumerate(acm.entry_names):
+            entry = AllowedCollisionEntry()
+            entry.enabled = [False] * total_links
+            
+            # If link_i is from robot1, allow collision with all robot2 links
+            if link_i in r1_links:
+                for j, link_j in enumerate(acm.entry_names):
+                    if link_j in r2_links:
+                        entry.enabled[j] = True
+            # If link_i is from robot2, allow collision with all robot1 links
+            elif link_i in r2_links:
+                for j, link_j in enumerate(acm.entry_names):
+                    if link_j in r1_links:
+                        entry.enabled[j] = True
+            
+            acm.entry_values.append(entry)
+        
+        ps = PlanningScene()
+        ps.is_diff = True
+        ps.allowed_collision_matrix = acm
+        
+        # Apply via planning scene monitor
+        planning_scene_monitor = self.panda.get_planning_scene_monitor()
+        with planning_scene_monitor.read_write() as scene:
+            # Apply the ACM directly to the scene
+            for i, link_i in enumerate(acm.entry_names):
+                for j, link_j in enumerate(acm.entry_names):
+                    if i < len(acm.entry_values) and j < len(acm.entry_values[i].enabled):
+                        if acm.entry_values[i].enabled[j]:
+                            scene.allowed_collision_matrix.set_entry(link_i, link_j, True)
+        
+        self.moveit_node.get_logger().info(
+            f'Allowed collision between {robot1_prefix} and {robot2_prefix}'
+        )
+        return True
 
     def get_action_methods(self, actions):
         all_methods = {
@@ -535,7 +745,11 @@ class BaseAction:
         return self.navigator.goToPose(pose)
 
     def _pick(self, cube):
-
+        
+        if not is_on_table(cube):
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
+            return False
         new_locations = self.init_poses()
         
         for key, new_pose in new_locations.items():
@@ -557,7 +771,6 @@ class BaseAction:
             f'{self.moveit_component_prefix}finger_joint1': gripper_open_value,
             f'{self.moveit_component_prefix}finger_joint2': gripper_open_value,
         }
-
         self.robot_model = self.panda.get_robot_model()
 
         self.panda_gripper.set_start_state_to_current_state()
@@ -568,9 +781,13 @@ class BaseAction:
 
         gripper_opening_result = self.panda_gripper.plan()
         if not gripper_opening_result:
+            self.moveit_node.get_logger().fatal('Could not plan open gripper')
+            self.moveit_result_future = None
+            self.set_result(TaskResult.FAILED)
             return False
 
         if not self._execute_moveit_command(gripper_opening_result.trajectory):
+            self.moveit_node.get_logger().fatal('Could not execute open gripper')
             return False
         # self.wait_for_completition()
         # status = self.check_for_result()
@@ -594,10 +811,14 @@ class BaseAction:
         plan_result = self.panda_arm.plan(single_plan_parameters=params)
 
         if not plan_result:
+            self.moveit_node.get_logger().fatal('Could not plan approach cube')
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
             return False
         robot_trajectory = plan_result.trajectory
 
         if not self._execute_moveit_command(robot_trajectory):
+            self.moveit_node.get_logger().fatal('Could not execute approach cube')
             return False
         # self.wait_for_completition()
         # status = self.check_for_result()
@@ -611,11 +832,15 @@ class BaseAction:
         plan_result = self.panda_arm.plan(single_plan_parameters=params)
 
         if not plan_result:
+            self.moveit_node.get_logger().fatal('Could not plan final approach cube')
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
             return False
 
         robot_trajectory = plan_result.trajectory
 
         if not self._execute_moveit_command(robot_trajectory):
+            self.moveit_node.get_logger().fatal('Could not execute final approach cube')
             return False
         # self.wait_for_completition()
         # status = self.check_for_result()
@@ -633,9 +858,13 @@ class BaseAction:
 
         gripper_closing_result = self.panda_gripper.plan()
         if not gripper_closing_result:
+            self.moveit_node.get_logger().fatal('Could not plan close gripper')
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
             return False
 
         if not self._execute_moveit_command(gripper_closing_result.trajectory):
+            self.moveit_node.get_logger().fatal('Could not execute close gripper')
             return False
         # self.wait_for_completition()
         # status = self.check_for_result()
@@ -648,10 +877,14 @@ class BaseAction:
         plan_result = self.panda_arm.plan(single_plan_parameters=params)
 
         if not plan_result:
+            self.moveit_node.get_logger().fatal('Could not plan ready pose')
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
             return False
         robot_trajectory = plan_result.trajectory
 
         if not self._execute_moveit_command(robot_trajectory):
+            self.moveit_node.get_logger().fatal('Could not execute ready pose')
             return False
         # self.wait_for_completition()
         # status = self.check_for_result()
@@ -659,6 +892,154 @@ class BaseAction:
         # if status != TaskResult.SUCCEEDED:
         #     return False
         return True
+
+    def _pick_secure(self, touple):
+        """Secure pick: checks all waypoint pairs for collision (O(n*m) complexity).
+
+        Args:
+            touple: tuple of (cube, other_points) where:
+                cube: color/name of the cube (e.g., 'red')
+                other_points: list of JointTrajectoryPoint from another robot
+
+        Returns:
+            bool: False if any collision is predicted, else proceeds like _pick
+        """
+        # Unpack the tuple
+        cube, other_points = touple
+        
+        self.moveit_node.get_logger().info(f'PICK_SECURE: Starting for cube={cube}')
+
+        # If cube not on table, behave like _pick
+        if not is_on_table(cube):
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
+            return False
+
+        # Refresh locations
+        new_locations = self.init_poses()
+        for key, new_pose in new_locations.items():
+            if self.locations.get(key) != new_pose:
+                self.locations[key] = new_pose
+
+        # Prepare planning params
+        self.panda_arm.set_start_state_to_current_state()
+        params = PlanRequestParameters(self.panda, 'moveit_cpp')
+        params.max_velocity_scaling_factor = 0.08
+        params.planning_pipeline = 'ompl'
+
+        # First movement: approach elevated above target
+        target_pose = self.locations[cube]
+        elevated_pose = PoseStamped()
+        elevated_pose.header.frame_id = target_pose.header.frame_id
+        elevated_pose.pose.position.x = float(target_pose.pose.position.x)
+        elevated_pose.pose.position.y = float(target_pose.pose.position.y)
+        elevated_pose.pose.position.z = float(target_pose.pose.position.z) + 0.15
+        elevated_pose.pose.orientation.x = target_pose.pose.orientation.x
+        elevated_pose.pose.orientation.y = target_pose.pose.orientation.y
+        elevated_pose.pose.orientation.z = target_pose.pose.orientation.z
+        elevated_pose.pose.orientation.w = target_pose.pose.orientation.w
+
+        self.panda_arm.set_goal_state(pose_stamped_msg=elevated_pose,
+                                      pose_link=self.moveit_component_prefix + 'hand_tcp')
+        plan_result = self.panda_arm.plan(single_plan_parameters=params)
+        if not plan_result:
+            self.moveit_node.get_logger().error('Could not plan approach cube (secure)')
+            self.set_result(TaskResult.FAILED)
+            self.moveit_result_future = None
+            return False
+        
+        # Check all trajectory waypoint pairs for collision (O(n*m))
+        try:
+            planned_msg = plan_result.trajectory.get_robot_trajectory_msg().joint_trajectory
+            
+            # Handle both list of points and single point
+            if isinstance(other_points, list):
+                other_waypoints = other_points
+            else:
+                # Single point - wrap in list
+                other_waypoints = [other_points] if other_points else []
+            
+            if not planned_msg.points or not other_waypoints:
+                self.moveit_node.get_logger().warn(
+                    'Skipping collision check - no waypoints'
+                )
+                return self._pick(cube)
+
+            robot_model = self.panda.get_robot_model()
+            this_group = self.moveit_component_prefix + 'arm'
+            other_group = (
+                'robot1_arm' if 'robot2_' in self.moveit_component_prefix 
+                else 'robot2_arm'
+            )
+            
+            n_this = len(planned_msg.points)
+            n_other = len(other_waypoints)
+            
+            self.moveit_node.get_logger().info(
+                f'Checking {n_this} x {n_other} = {n_this * n_other} '
+                f'waypoint pairs for collision'
+            )
+            
+            for i, waypoint_this in enumerate(planned_msg.points):
+                if not waypoint_this.positions:
+                    continue
+                
+                for j, waypoint_other in enumerate(other_waypoints):
+                    # Extract positions from the other waypoint
+                    other_positions = list(
+                        getattr(waypoint_other, 'positions', []) or []
+                    )
+                    if not other_positions:
+                        continue
+                    
+                    combined_state = RobotState(robot_model)
+                    
+                    # Set this robot's configuration
+                    try:
+                        combined_state.set_joint_group_positions(
+                            this_group, list(waypoint_this.positions)
+                        )
+                    except Exception as e:
+                        self.moveit_node.get_logger().warn(
+                            f'Failed to set {this_group} at [{i}]: {e}'
+                        )
+                        continue
+                    
+                    # Set other robot's configuration
+                    try:
+                        combined_state.set_joint_group_positions(
+                            other_group, other_positions
+                        )
+                    except Exception as e:
+                        self.moveit_node.get_logger().warn(
+                            f'Failed to set {other_group} at [{j}]: {e}'
+                        )
+                        continue
+
+                    # Check collision for this pair
+                    scene = PlanningScene(robot_model)
+                    combined_state.update()
+
+                    if scene.is_state_colliding(combined_state, other_group):
+                        self.moveit_node.get_logger().fatal(
+                            f'COLLISION at waypoint pair [{i},{j}]! '
+                            f'Aborting pick_secure.'
+                        )
+                        return False
+
+            self.moveit_node.get_logger().fatal(
+                f'All {n_this * n_other} waypoint pairs collision-free! '
+                f'Proceeding with pick.'
+            )
+
+        except Exception as e:
+            self.moveit_node.get_logger().error(f'Collision check exception: {e}')
+            import traceback
+            self.moveit_node.get_logger().error(
+                f'Traceback:\n{traceback.format_exc()}'
+            )
+
+        return self._pick(cube)
 
     def _place(self):
         params = PlanRequestParameters(self.panda, 'moveit_cpp')
@@ -674,7 +1055,7 @@ class BaseAction:
         if 'robot2' in self.moveit_component_prefix.lower():
             pose.header.frame_id = 'world'
             pose.pose.position.x = float(1.01)
-            pose.pose.position.y = float(0.50)
+            pose.pose.position.y = float(0.55)
             pose.pose.position.z = float(0.797)
             pose.pose.orientation.x = 0.0
             pose.pose.orientation.y = 1.0
@@ -695,6 +1076,7 @@ class BaseAction:
         plan_result = self.panda_arm.plan(single_plan_parameters=params)
 
         if not plan_result:
+            self.set_result(TaskResult.FAILED)
             return False
         robot_trajectory = plan_result.trajectory
         if not self._execute_moveit_command(robot_trajectory):
@@ -715,6 +1097,7 @@ class BaseAction:
 
         gripper_openning_result = self.panda_gripper.plan()
         if not gripper_openning_result:
+            self.set_result(TaskResult.FAILED)
             return False
         if not self._execute_moveit_command(gripper_openning_result.trajectory):
             return False
@@ -729,16 +1112,259 @@ class BaseAction:
         plan_result = self.panda_arm.plan(single_plan_parameters=params)
 
         if not plan_result:
+            self.set_result(TaskResult.FAILED)
             return False
 
         robot_trajectory = plan_result.trajectory
         if not self._execute_moveit_command(robot_trajectory):
             return False
-        # self.wait_for_completition()
-        # status = self.check_for_result()
-        # self.moveit_node.get_logger().info(F'Current status {status}')
-        # if status != TaskResult.SUCCEEDED:
-        #     return False
+    
+        return True
+    
+
+    def _place_secure(self, touple):
+        """Secure place: checks all waypoint pairs for collision (O(n*m) complexity).
+
+        Args:
+            touple: tuple containing (cube, other_points) where:
+                cube: color/name of the cube
+                other_points: list of JointTrajectoryPoint from the other robot
+
+        Returns:
+            bool: False if any collision is predicted, else proceeds like _place
+        """
+        # Unpack the tuple
+        if isinstance(touple, tuple):
+            cube, other_points = touple
+        else:
+            other_points = touple
+            cube = None
+
+        params = PlanRequestParameters(self.panda, 'moveit_cpp')
+        params.max_velocity_scaling_factor = 0.1
+        params.planning_pipeline = 'ompl'
+        self.panda_arm.set_start_state_to_current_state()
+        gripper_open_value = 0.036
+        open_joints_value = {
+            f'{self.moveit_component_prefix}finger_joint1': gripper_open_value,
+            f'{self.moveit_component_prefix}finger_joint2': gripper_open_value,
+        }
+        pose = PoseStamped()
+        if 'robot2' in self.moveit_component_prefix.lower():
+            pose.header.frame_id = 'world'
+            pose.pose.position.x = float(1.01)
+            pose.pose.position.y = float(0.55)
+            pose.pose.position.z = float(0.797)
+            pose.pose.orientation.x = 0.0
+            pose.pose.orientation.y = 1.0
+            pose.pose.orientation.z = 0.0
+            pose.pose.orientation.w = 0.0
+        else:
+            pose.header.frame_id = 'world'
+            pose.pose.position.x = float(0.55)
+            pose.pose.position.y = float(-0.55)
+            pose.pose.position.z = float(0.797)
+            pose.pose.orientation.x = 0.0
+            pose.pose.orientation.y = 1.0
+            pose.pose.orientation.z = 0.0
+            pose.pose.orientation.w = 0.0
+
+        # 1. Plan to place pose and check collision with all waypoint pairs
+        self.panda_arm.set_goal_state(
+            pose_stamped_msg=pose,
+            pose_link=self.moveit_component_prefix + 'hand_tcp'
+        )
+        plan_result = self.panda_arm.plan(single_plan_parameters=params)
+        if not plan_result:
+            self.set_result(TaskResult.FAILED)
+            return False
+
+        # Check collision for place trajectory
+        try:
+            planned_msg = plan_result.trajectory.get_robot_trajectory_msg().joint_trajectory
+            
+            # Handle both list of points and single point
+            if isinstance(other_points, list):
+                other_waypoints = other_points
+            else:
+                other_waypoints = [other_points] if other_points else []
+
+            if planned_msg.points and other_waypoints:
+                robot_model = self.panda.get_robot_model()
+                this_group = self.moveit_component_prefix + 'arm'
+                other_group = (
+                    'robot1_arm' if 'robot2_' in self.moveit_component_prefix
+                    else 'robot2_arm'
+                )
+                
+                n_this = len(planned_msg.points)
+                n_other = len(other_waypoints)
+                
+                self.moveit_node.get_logger().info(
+                    f'PLACE: Checking {n_this} x {n_other} = {n_this * n_other} '
+                    f'waypoint pairs for collision'
+                )
+                
+                # O(n*m) collision check
+                for i, waypoint_this in enumerate(planned_msg.points):
+                    if not waypoint_this.positions:
+                        continue
+                    
+                    for j, waypoint_other in enumerate(other_waypoints):
+                        other_positions = list(
+                            getattr(waypoint_other, 'positions', []) or []
+                        )
+                        if not other_positions:
+                            continue
+                        
+                        combined_state = RobotState(robot_model)
+                        
+                        try:
+                            combined_state.set_joint_group_positions(
+                                this_group, list(waypoint_this.positions)
+                            )
+                        except Exception as e:
+                            self.moveit_node.get_logger().warn(
+                                f'Failed to set {this_group} at [{i}]: {e}'
+                            )
+                            continue
+                        
+                        try:
+                            combined_state.set_joint_group_positions(
+                                other_group, other_positions
+                            )
+                        except Exception as e:
+                            self.moveit_node.get_logger().warn(
+                                f'Failed to set {other_group} at [{j}]: {e}'
+                            )
+                            continue
+                        
+                        scene = PlanningScene(robot_model)
+                        combined_state.update()
+                        
+                        if scene.is_state_colliding(combined_state, other_group):
+                            self.moveit_node.get_logger().fatal(
+                                f'COLLISION at place waypoint pair [{i},{j}]! '
+                                f'Aborting place_secure.'
+                            )
+                            return False
+                
+                self.moveit_node.get_logger().info(
+                    f'Place trajectory: All {n_this * n_other} pairs collision-free'
+                )
+        except Exception as e:
+            self.moveit_node.get_logger().warn(
+                f'Collision check error in place_secure (place pose): {e}'
+            )
+
+        # If safe, execute place pose
+        robot_trajectory = plan_result.trajectory
+        if not self._execute_moveit_command(robot_trajectory):
+            return False
+
+        # Open gripper
+        self.panda_gripper.set_start_state_to_current_state()
+        self.robot_model = self.panda.get_robot_model()
+        gripper_open = RobotState(self.robot_model)
+        gripper_open.set_joint_group_positions(
+            self.moveit_component_prefix + 'gripper',
+            list(open_joints_value.values())
+        )
+        self.panda_gripper.set_goal_state(robot_state=gripper_open)
+        gripper_openning_result = self.panda_gripper.plan()
+        if not gripper_openning_result:
+            self.set_result(TaskResult.FAILED)
+            return False
+        if not self._execute_moveit_command(gripper_openning_result.trajectory):
+            return False
+
+        # 2. Plan to ready pose and check collision with all waypoint pairs
+        self.panda_arm.set_start_state_to_current_state()
+        self.panda_arm.set_goal_state(configuration_name='ready')
+        plan_result_ready = self.panda_arm.plan(single_plan_parameters=params)
+        if not plan_result_ready:
+            self.set_result(TaskResult.FAILED)
+            return False
+
+        # Check collision for ready trajectory
+        try:
+            planned_msg_ready = (
+                plan_result_ready.trajectory.get_robot_trajectory_msg().joint_trajectory
+            )
+            
+            if planned_msg_ready.points and other_waypoints:
+                robot_model = self.panda.get_robot_model()
+                this_group = self.moveit_component_prefix + 'arm'
+                other_group = (
+                    'robot1_arm' if 'robot2_' in self.moveit_component_prefix
+                    else 'robot2_arm'
+                )
+                
+                n_this = len(planned_msg_ready.points)
+                n_other = len(other_waypoints)
+                
+                self.moveit_node.get_logger().info(
+                    f'READY: Checking {n_this} x {n_other} = {n_this * n_other} '
+                    f'waypoint pairs for collision'
+                )
+                
+                # O(n*m) collision check
+                for i, waypoint_this in enumerate(planned_msg_ready.points):
+                    if not waypoint_this.positions:
+                        continue
+                    
+                    for j, waypoint_other in enumerate(other_waypoints):
+                        other_positions = list(
+                            getattr(waypoint_other, 'positions', []) or []
+                        )
+                        if not other_positions:
+                            continue
+                        
+                        combined_state = RobotState(robot_model)
+                        
+                        try:
+                            combined_state.set_joint_group_positions(
+                                this_group, list(waypoint_this.positions)
+                            )
+                        except Exception as e:
+                            self.moveit_node.get_logger().warn(
+                                f'Failed to set {this_group} at [{i}]: {e}'
+                            )
+                            continue
+                        
+                        try:
+                            combined_state.set_joint_group_positions(
+                                other_group, other_positions
+                            )
+                        except Exception as e:
+                            self.moveit_node.get_logger().warn(
+                                f'Failed to set {other_group} at [{j}]: {e}'
+                            )
+                            continue
+                        
+                        scene = PlanningScene(robot_model)
+                        combined_state.update()
+                        
+                        if scene.is_state_colliding(combined_state, other_group):
+                            self.moveit_node.get_logger().fatal(
+                                f'COLLISION at ready waypoint pair [{i},{j}]! '
+                                f'Aborting place_secure.'
+                            )
+                            return False
+                
+                self.moveit_node.get_logger().info(
+                    f'Ready trajectory: All {n_this * n_other} pairs collision-free'
+                )
+        except Exception as e:
+            self.moveit_node.get_logger().warn(
+                f'Collision check error in place_secure (ready pose): {e}'
+            )
+
+        # If safe, execute ready pose
+        robot_trajectory_ready = plan_result_ready.trajectory
+        if not self._execute_moveit_command(robot_trajectory_ready):
+            return False
+
         return True
 
     def _pitch_retract(self, angle):
@@ -883,6 +1509,9 @@ class BaseAction:
 
         max_wait_time = 60.0
         start_time = time.time()
+        if not self.moveit_result_future:
+            self.moveit_node.get_logger().fatal('moveit_result_future IS NONE')
+            return False
 
         while not self.moveit_result_future.done():
             rclpy.spin_until_future_complete(

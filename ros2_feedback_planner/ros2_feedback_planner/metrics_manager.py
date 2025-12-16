@@ -12,7 +12,7 @@ from lifecycle_msgs.srv import ChangeState
 from lifecycle_msgs.msg import Transition
 from std_srvs.srv import Empty
 from std_msgs.msg import Empty as Emptymsg
-from feedback_planner_interfaces.srv import TriggerFeedback
+from feedback_planner_interfaces.srv import TriggerManipulation
 import pandas as pd
 from tf2_ros import Buffer, TransformListener
 import random
@@ -34,6 +34,7 @@ class MetricsManager(LifecycleNode):
         self.replan_count = 0
         self.now = self.get_clock().now()
         self.collision_check = None
+        self.is_resetting = False
 
         self.current_experiment = {
             'method': None,
@@ -51,6 +52,7 @@ class MetricsManager(LifecycleNode):
         self.is_checking_for_collision = False
         self.success_callback_triggered = False
         self.is_feedback_cleaned_up = False
+        self.is_manipulation_cleaned_up = False
 
     def __del__(self):
         """Destructor to ensure metrics are saved even if shutdown is not called properly."""
@@ -64,6 +66,8 @@ class MetricsManager(LifecycleNode):
         self.get_logger().fatal('Configuring...')
         self.replan_count = 0
         self.is_feedback_cleaned_up = False
+        self.is_manipulation_cleaned_up = False
+        
         self.is_planner_configured = False
         self.success_callback_triggered = False
         try:
@@ -97,7 +101,7 @@ class MetricsManager(LifecycleNode):
                 callback_group=self.callback_group
             )
             self.change_pick_order_client = self.create_client(
-                TriggerFeedback,
+                TriggerManipulation,
                 'set_first_cube',
                 callback_group=self.callback_group
             )
@@ -233,7 +237,8 @@ class MetricsManager(LifecycleNode):
         future_feedback.add_done_callback(self.feedback_configure_cb)
         
         if self.test_type_param == 'manipulation':
-            self.manipulation_sim_client.call_async(req)
+            future_manipulation = self.manipulation_sim_client.call_async(req)
+            future_manipulation.add_done_callback(self.manipulation_configure_cb)
 
     def feedback_configure_cb(self, future):
         """Activate feedback node after successful configuration."""
@@ -253,6 +258,19 @@ class MetricsManager(LifecycleNode):
             future = self.feedback_manager_client.call_async(req)
             future.add_done_callback(self.feedback_configure_cb)
 
+    def manipulation_configure_cb(self, future):
+        """Handle manipulation simulator configuration response."""
+        if future.result().success:
+            self.get_logger().info('Manipulation simulator configured successfully')
+        else:
+            self.get_logger().error('Error configuring manipulation simulator, retrying...')
+            req = ChangeState.Request()
+            transition = Transition()
+            transition.id = Transition.TRANSITION_CONFIGURE
+            req.transition = transition
+            future = self.manipulation_sim_client.call_async(req)
+            future.add_done_callback(self.manipulation_configure_cb)
+
     def execute_plan(self):
         req = ChangeState.Request()
         transition = Transition()
@@ -271,8 +289,9 @@ class MetricsManager(LifecycleNode):
             self.manipulation_sim_client.call_async(req)
 
     def change_cube_order(self):
-        req = TriggerFeedback.Request()
-        req.feedback_input = self.first_action
+        req = TriggerManipulation.Request()
+        req.color = self.first_action
+        req.is_colliding = self.will_collide
         self.change_pick_order_client.call_async(req)
 
     def planner_configure_cb(self, future):
@@ -301,9 +320,11 @@ class MetricsManager(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: State):
+        self.get_logger().fatal('Cleaning up...')
         if hasattr(self, 'metrics_timer') and self.metrics_timer is not None:
             self.destroy_timer(self.metrics_timer)
-        self.get_logger().fatal('Cleaning up...')
+        self.will_collide = False
+        self.is_resetting = False
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: State):
@@ -337,13 +358,13 @@ class MetricsManager(LifecycleNode):
     def feedback_deactivate_cb(self, future):
         """Callback to handle feedback node deactivation response."""
         if future.result().success:
+            self.get_logger().info('Feedback node deactivated successfully')
             req_cleanup = ChangeState.Request()
             transition_cleanup = Transition()
             transition_cleanup.id = Transition.TRANSITION_CLEANUP
             req_cleanup.transition = transition_cleanup
             future_feedback = self.feedback_manager_client.call_async(req_cleanup)
             future_feedback.add_done_callback(self.feedback_cleanup_cb)
-            self.get_logger().info('Feedback node deactivated successfully')
             return
         else:
             self.get_logger().warn('Feedback node deactivation failed, retrying...')
@@ -358,6 +379,7 @@ class MetricsManager(LifecycleNode):
         """Handle planner node deactivation response."""
         try:
             if future.result().success:
+                self.get_logger().info('Planner node deactivated successfully')
                 req_cleanup = ChangeState.Request()
                 transition_cleanup = Transition()
                 transition_cleanup.id = Transition.TRANSITION_CLEANUP
@@ -392,12 +414,19 @@ class MetricsManager(LifecycleNode):
     def planner_cleanup_cb(self, future):
         """Handle planner node cleanup response."""
         if future.result().success:
-            if self.is_feedback_cleaned_up:
+            self.get_logger().warn('Planner node cleanup successfully')
+            # Check if all nodes are cleaned up before reconfiguring
+            all_cleaned = self.is_feedback_cleaned_up and (
+                self.is_manipulation_cleaned_up if self.test_type_param == 'manipulation'
+                else True
+            )
+            if all_cleaned:
                 self.on_cleanup(State('inactive', 2))
                 self.on_configure(State('unconfigured', 1))
-                return
-            time.sleep(0.2)
-            self.planner_cleanup_cb(future)
+            else:
+                # Wait a bit and check again
+                time.sleep(1.0)
+                self.planner_cleanup_cb(future)
         else:
             self.get_logger().warn('Planner node cleanup failed, retrying...')
             req = ChangeState.Request()
@@ -410,6 +439,7 @@ class MetricsManager(LifecycleNode):
     def reset(self):
         """Reset the metrics manager and deactivate all managed nodes."""
         self.get_logger().fatal('Resetting metrics manager and deactivating nodes...')
+        self.is_resetting = True
         # Deactivate all nodes - use callbacks to handle failures gracefully
         self.save_all_metrics_to_csv()
         req = ChangeState.Request()
@@ -434,7 +464,8 @@ class MetricsManager(LifecycleNode):
                 transition_cleanup = Transition()
                 transition_cleanup.id = Transition.TRANSITION_CLEANUP
                 req_cleanup.transition = transition_cleanup
-                self.manipulation_sim_client.call_async(req_cleanup) # todo check if we have to w8 this also
+                future_manipulation_cleanup = self.manipulation_sim_client.call_async(req_cleanup)
+                future_manipulation_cleanup.add_done_callback(self.manipulation_cleanup_cb)
             else:
                 self.get_logger().warn('Manipulation simulator deactivation failed, retrying...')
                 req = ChangeState.Request()
@@ -445,6 +476,20 @@ class MetricsManager(LifecycleNode):
                 future.add_done_callback(self.manipulation_deactivate_cb)
         except Exception as e:
             self.get_logger().error(f'Error in manipulation deactivation callback: {e}')
+
+    def manipulation_cleanup_cb(self, future):
+        """Handle manipulation simulator cleanup response."""
+        if future.result().success:
+            self.get_logger().fatal('Manipulation simulator cleaned up successfully')
+            self.is_manipulation_cleaned_up = True
+        else:
+            self.get_logger().warn('Manipulation simulator cleanup failed, retrying...')
+            req = ChangeState.Request()
+            transition = Transition()
+            transition.id = Transition.TRANSITION_CLEANUP
+            req.transition = transition
+            future = self.manipulation_sim_client.call_async(req)
+            future.add_done_callback(self.manipulation_cleanup_cb)
 
     def laser_cb(self, msg):
         if not self.is_checking_for_collision:
@@ -461,8 +506,6 @@ class MetricsManager(LifecycleNode):
 
     def check_collision_cb(self, msg):
         if not self.is_checking_for_collision:
-            self.get_logger().fatal('Collision check deactivated')
-
             return
         if msg.data:
             self.get_logger().fatal('Collision detected')
@@ -549,6 +592,9 @@ class MetricsManager(LifecycleNode):
 
     def on_success_callback(self, request, response):
         self.get_logger().fatal('on_success_callback triggered')
+        if self.is_resetting:
+            self.get_logger().warn('Reset in progress, ignoring success callback')
+            return response
         _ = request
         
         # Prevent duplicate success callbacks

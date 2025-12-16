@@ -42,6 +42,7 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
+        respawn=True,
         arguments=['--ros-args', '--log-level', log_level],
         parameters=[planning_params,
                     # {'use_sim_time': use_sim_time},
@@ -55,6 +56,7 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
+        respawn=True,
         arguments=['--ros-args', '--log-level', log_level],
         parameters=[planning_params]
     )
@@ -66,6 +68,7 @@ def generate_launch_description():
         namespace=namespace,
         output='screen',
         emulate_tty=True,
+        respawn=True,
         arguments=['--ros-args', '--log-level', log_level],
         parameters=[planning_params]
     )
@@ -74,6 +77,7 @@ def generate_launch_description():
         package='ros2_feedback_planner',
         executable='feedback_node',
         name='feedback_node',
+        respawn=True,
         namespace=namespace,
         output='screen',
         emulate_tty=True,
