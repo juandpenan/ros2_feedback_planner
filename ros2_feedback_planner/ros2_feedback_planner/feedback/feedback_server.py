@@ -16,6 +16,36 @@ from std_srvs.srv import Empty
 from feedback_planner_interfaces.srv import TriggerFeedback
 from std_msgs.msg import Empty as Emptymsg
 import PIL.Image
+from enum import IntEnum
+
+
+class FailureProbability(IntEnum):
+    """Enumeration for failure probability levels with ordering support."""
+    VERY_IMPROBABLE = 1
+    IMPROBABLE = 2
+    NEUTRAL = 3
+    LIKELY = 4
+    VERY_LIKELY = 5
+
+    @classmethod
+    def from_string(cls, value: str):
+        """Convert string representation to enum value."""
+        mapping = {
+            'very improbable': cls.VERY_IMPROBABLE,
+            'very_improbable': cls.VERY_IMPROBABLE,
+            'improbable': cls.IMPROBABLE,
+            'neutral': cls.NEUTRAL,
+            'likely': cls.LIKELY,
+            'very likely': cls.VERY_LIKELY,
+            'very_likely': cls.VERY_LIKELY,
+        }
+        normalized = value.lower().strip()
+        return mapping.get(normalized, cls.NEUTRAL)
+
+    def __str__(self):
+        """Return human-readable string representation."""
+        return self.name.lower().replace('_', ' ')
+
 
 
 class FeedbackNode(LifecycleNode):
@@ -27,7 +57,7 @@ class FeedbackNode(LifecycleNode):
         self.last_image = None
         self.last_prompt = None
         self.last_answer = None
-        self.probability_threshold = 'likely'
+        self.probability_threshold = FailureProbability.LIKELY
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().fatal('Configuring...')
@@ -48,8 +78,9 @@ class FeedbackNode(LifecycleNode):
             self.feedback_type = self.get_parameter(
                 'feedback_type').get_parameter_value().string_value
             if 'forecast' in self.feedback_type:
-                self.probability_threshold = self.get_parameter(
+                threshold_str = self.get_parameter(
                     self.feedback_type + '.probability_threshold').get_parameter_value().string_value
+                self.probability_threshold = FailureProbability.from_string(threshold_str)
             self.forecast_system_prompt = self.get_parameter(
                 self.feedback_type + '.system_prompt').get_parameter_value().string_value
             image_topic = self.get_parameter(
@@ -214,84 +245,135 @@ def strip_markdown_json(text):
 
 
 async def main_loop(node, config):
-    from websockets.exceptions import ConnectionClosedError
-
-    # Configuration for session management
-    MAX_CONTEXT_TOKENS = 160000  # Leave buffer before 163k limit
+    """
+    Main loop using streaming inference for async streaming.
+    Supports both Gemini and Hugging Face vendors.
+    """
+    _ = config
+    
     while True:
         try:
-            accumulated_tokens = 0
-            async with node.llm.live_session(config) as session:                
-                while True:
-                    if (accumulated_tokens > MAX_CONTEXT_TOKENS):
-                        break
+            if node.last_image is None or node.last_prompt is None or not node.is_executing:
+                await asyncio.sleep(0.25)
+                continue
 
-                    if node.last_image is None or node.last_prompt is None or not node.is_executing:
-                        await asyncio.sleep(0.25)
-                        continue
-                    # node.last_image.show()
+            buffer = ''
+            is_canceled = False
 
-                    await session.send_realtime_input(media=node.last_image)
-                    await session.send_realtime_input(text=node.last_prompt)
+            if node.vendor == 'huggingface':
+                # Hugging Face streaming
+                import base64
+                from io import BytesIO
+                
+                # Prepare messages with image
+                messages = []
+                if node.llm._system_prompt:
+                    messages.append({
+                        'role': 'system',
+                        'content': node.llm._system_prompt
+                    })
+                
+                # Convert image to base64
+                buffered = BytesIO()
+                node.last_image.save(buffered, format='JPEG')
+                image_data = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                
+                # Add user message with image
+                messages.append({
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': node.last_prompt},
+                        {
+                            'type': 'image_url',
+                            'image_url': {
+                                'url': f'data:image/jpeg;base64,{image_data}'
+                            }
+                        }
+                    ]
+                })
+                
+                # Create streaming request
+                stream = node.llm.client.chat.completions.create(
+                    model=node.model_name,
+                    messages=messages,
+                    stream=True,
+                    max_tokens=node.max_tokens,
+                    temperature=node.temperature,
+                )
+                
+                for chunk in stream:
+                    if chunk.choices and len(chunk.choices) > 0:
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                            token = chunk.choices[0].delta.content
+                            buffer += token
+                            # node.get_logger().fatal(f'LLM answer: {buffer}')
 
-                    buffer = ''
-                    is_canceled = False
-
-                    async for response in session.receive():
-                        if response.usage_metadata:
-                            usage = response.usage_metadata
-                            accumulated_tokens = usage.total_token_count
-                        if response is not None and response.text is not None:
-                            buffer += response.text
-                            # node.get_logger().fatal(f'LLM response: {response.text}')
                             if 'forecast' in node.feedback_type.lower():
-                                if 'probability_of_failure' in response.text:
-                                    match = re.search(
-                                        r'"probability_of_failure":\s*"([^"]+)"',
-                                        response.text
-                                    )
-                                    if match:
-                                        prob = str(match.group(1))
-                                        node.get_logger().fatal(f'Failure probability: {prob}')
-                                        if node.probability_threshold in prob:
-                                            is_canceled = True
-                                            break
+                                # Always search in the accumulated buffer
+                                match = re.search(
+                                    r'"probability_of_failure":\s*"([^"]+)"',
+                                    buffer
+                                )   
+                                if match:
+                                    prob_str = str(match.group(1))
+                                    prob_enum = FailureProbability.from_string(prob_str)
+                                    node.get_logger().fatal(f'Failure probability: {prob_str} ({prob_enum.name})')
+                                    if prob_enum >= node.probability_threshold:
+                                        is_canceled = True
+                                        break
                             elif 'doremi' in node.feedback_type.lower():
-                                if 'yes' in response.text.lower():
+                                if 'yes' in buffer.lower():
                                     is_canceled = True
                                     break
-                    node.last_answer = buffer
-
-                    if is_canceled:
-                        node.probability_threshold = 'likely'  # DELETE THISS!! OMGG
-                        req = TriggerFeedback.Request()
-                        req.feedback_input = node.last_answer
-                        msg = Emptymsg()
-                        node.replan_pub.publish(msg)
-                        node.get_logger().fatal(
-                            'Canceling action due to high failure probability'
-                        )
-                        node.cancel_action_client.call_async(req)
-                    await asyncio.sleep(0.25)
-
-        except ConnectionClosedError as e:
-            error_msg = str(e)
-            if 'token count exceeds' in error_msg or '1007' in error_msg:
-                node.get_logger().fatal(
-                    f'Token limit exceeded (error 1007)! '
-                    f'Last known count: {accumulated_tokens} tokens. '
-                    f'Error: {error_msg}. Reconnecting...'
+            
+            elif node.vendor == 'gemini':
+                contents = [node.last_prompt, node.last_image]
+                
+                stream = await node.llm.live_client.aio.models.generate_content_stream(
+                    model=node.model_name,
+                    contents=contents,
                 )
-                await asyncio.sleep(0.5)
-                continue
+                
+                async for chunk in stream:
+                    if chunk.text:
+                        buffer += chunk.text
+                        
+                        if 'forecast' in node.feedback_type.lower():
+                            # Always search in the accumulated buffer
+                            match = re.search(
+                                r'"probability_of_failure":\s*"([^"]+)"',
+                                buffer
+                            )
+                            if match:
+                                prob_str = str(match.group(1))
+                                prob_enum = FailureProbability.from_string(prob_str)
+                                node.get_logger().fatal(f'Failure probability: {prob_str} ({prob_enum.name})')
+                                if prob_enum >= node.probability_threshold:
+                                    is_canceled = True
+                                    break
+                        elif 'doremi' in node.feedback_type.lower():
+                            if 'yes' in buffer.lower():
+                                is_canceled = True
+                                break
             else:
-                node.get_logger().error(
-                    f'Unexpected connection closed (no close frame). Error: {error_msg}. '
-                    'Will attempt to reconnect after short backoff.'
-                )
-                # Small backoff before reconnecting the session loop
+                node.get_logger().error(f'Unsupported vendor for async loop: {node.vendor}')
                 await asyncio.sleep(1.0)
                 continue
+
+            node.last_answer = buffer
+
+            if is_canceled:
+                req = TriggerFeedback.Request()
+                req.feedback_input = node.last_answer
+                msg = Emptymsg()
+                node.replan_pub.publish(msg)
+                node.get_logger().fatal(
+                    'Canceling action due to high failure probability'
+                )
+                node.cancel_action_client.call_async(req)
+            
+            await asyncio.sleep(0.25)
+
         except Exception as e:
             node.get_logger().error(f'Unexpected error in main_loop: {e}')
             await asyncio.sleep(0.5)
@@ -326,18 +408,19 @@ def offline_main_loop(node):
                     answer
                 )
                 if match:
-                    prob = str(match.group(1))
-                    node.get_logger().fatal(f'Failure probability: {prob}')
-                    if node.probability_threshold in prob:
+                    prob_str = str(match.group(1))
+                    prob_enum = FailureProbability.from_string(prob_str)
+                    node.get_logger().fatal(f'Failure probability: {prob_str} ({prob_enum.name})')
+                    # Check if the detected probability is >= threshold
+                    if prob_enum >= node.probability_threshold:
                         is_canceled = True
-                        
+
             elif 'doremi' in node.feedback_type.lower():
                 if 'yes' in answer.lower():
                     is_canceled = True
 
             # Cancel action if needed
             if is_canceled:
-                node.probability_threshold = 'likely'  # DELETE THISS!! OMGG
                 req = TriggerFeedback.Request()
                 req.feedback_input = node.last_answer
                 msg = Emptymsg()
@@ -346,7 +429,7 @@ def offline_main_loop(node):
                     'Canceling action due to high failure probability'
                 )
                 node.cancel_action_client.call_async(req)
-            
+
             # Small sleep to avoid spinning too fast
             time.sleep(0.25)
 
@@ -372,21 +455,20 @@ def main(args=None):
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except AttributeError:
             asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    
+
     rclpy.init(args=args)
     node = FeedbackNode(automatically_declare_parameters_from_overrides=True)
     node.get_logger().info('Node Constructed')
-    
+
     ros_thread = threading.Thread(target=ros_spin_thread, args=(node,), daemon=True)
     ros_thread.start()
 
     try:
-        # Wait for configuration and activation
         while not hasattr(node, 'llm') and not node.is_activated:
             node.get_logger().info('Waiting to be configured and activated',
                                    throttle_duration_sec=5)
             time.sleep(0.5)
-        
+
         # Choose the appropriate loop based on vendor
         if node.vendor == 'local':
             node.get_logger().fatal('Starting OFFLINE main loop for local inference')
@@ -398,7 +480,7 @@ def main(args=None):
             config = {'response_modalities': ['TEXT']}
             loop.run_until_complete(main_loop(node, config))
             loop.close()
-            
+
     except KeyboardInterrupt:
         node.get_logger().info('Keyboard interrupt received')
     finally:

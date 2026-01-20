@@ -758,7 +758,7 @@ class BaseAction:
 
         self.panda_arm.set_start_state_to_current_state()
         params = PlanRequestParameters(self.panda, 'moveit_cpp')
-        params.max_velocity_scaling_factor = 0.08
+        params.max_velocity_scaling_factor = 0.02
         params.planning_pipeline = 'ompl'
 
         gripper_close_value = 0.01
@@ -924,7 +924,7 @@ class BaseAction:
         # Prepare planning params
         self.panda_arm.set_start_state_to_current_state()
         params = PlanRequestParameters(self.panda, 'moveit_cpp')
-        params.max_velocity_scaling_factor = 0.08
+        params.max_velocity_scaling_factor = 0.02
         params.planning_pipeline = 'ompl'
 
         # First movement: approach elevated above target

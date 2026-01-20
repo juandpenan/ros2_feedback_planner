@@ -1,12 +1,10 @@
 scenario_coordinator:
   ros__parameters:
-    # List of cubes to use in scenarios
     cubes: ['red', 'black', 'blue', 'green', 'yellow', 'purple', 'cyan', 'orange', 'grey']
     
     delay_between_scenarios: 3.0
     robot1_start_delay: 0.0       
     robot2_start_delay: 0.5       
-    
 
     red: [0.8, 0.0, 0.55]
     

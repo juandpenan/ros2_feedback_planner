@@ -7,7 +7,7 @@ planner_node:
       temperature: 0.5
       max_tokens: 6000
     action_backend: 'nav2'
-    planner_type: 'monologue' # doremi, monologue todo(juandpenan): rename current to method name when name is clear
+    planner_type: 'forecast' # doremi, monologue todo(juandpenan): rename current to method name when name is clear
     forecast:
       feedback_mode: 'continious' # once or continious
       system_prompt: |
@@ -545,10 +545,10 @@ feedback_node:
     llm_client:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
-      model_name: 'gemini-live-2.5-flash-preview' #'gemini-live-2.5-flash-preview' gemini-2.0-flash-live-001
+      model_name: 'gemini-flash-lite-latest'
       temperature: 1.0
       max_tokens: 750
-    feedback_type: 'monologue'  # doremi monologue forecast
+    feedback_type: 'forecast'  # doremi monologue forecast
     forecast:
       probability_threshold: neutral
       system_prompt: |
@@ -682,23 +682,19 @@ metrics_manager_node:
   ros__parameters:
     data_path: /home/juan/experiments
     test_type: 'navigation' #nav manipulation
-    strategy: 'monologue' 
+    strategy: 'forecast' 
     timeout_seconds: 350.0 # less than 6 minutes to sucess
     navigation:
       target_frame: 'agent0'
       collision_min_distance: 0.15
-      collision_max_distance: 0.9 # person invades robot space
+      collision_max_distance: 0.9 
       agent_collision_pose:
         x: -0.25
         y: 4.54
-        min_yaw: 0.46 # has to be greater than absolute value of yaw
+        min_yaw: 0.46
       agent_safe_pose:
         x: -8.33
         y: 1.2
-        min_yaw: -2.8 # has to be greater than absolute value of yaw
-      # agent_pose_to_start:
-      #   x: 0.54
-      #   y: -0.89
-      #   min_yaw: 0.0 # has to be greater than absolute value of yaw
+        min_yaw: -2.8
       agent_pose_radius: 0.25 # in m
       probability_of_colission: 1.0

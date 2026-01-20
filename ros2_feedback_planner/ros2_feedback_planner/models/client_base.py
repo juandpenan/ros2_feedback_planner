@@ -1,5 +1,5 @@
 
-"""This module provides an abstract base client for interfacing with OpenAI, Gemini, or a local Llama model."""
+"""This module provides an abstract base client for interfacing with OpenAI, Gemini, Hugging Face, or a local Llama model."""
 
 import os
 from openai import OpenAI
@@ -14,12 +14,14 @@ import json
 import asyncio
 from datetime import datetime
 from contextlib import asynccontextmanager
+from huggingface_hub import InferenceClient
 
 
 
 class BaseClient(ABC):
 
     """Abstract base client for interfacing with OpenAI, Gemini, or a local Llama model."""
+
     def __init__(
         self,
         vendor: str,
@@ -34,7 +36,7 @@ class BaseClient(ABC):
         Initialize the BaseClient with the specified vendor and generation configs.
 
         Args:
-            vendor (str): The vendor to use ('openai', 'gemini', or 'local').
+            vendor (str): The vendor to use ('openai', 'gemini', 'huggingface', or 'local').
             api_key_variable (str, optional): The API env variable where the key is stored.
             model_name (str, optional): The name of the local model to use.
             temperature (float, optional): Sampling temperature.
@@ -60,7 +62,12 @@ class BaseClient(ABC):
         self.top_k = top_k
         self.max_tokens = max_tokens
 
-        if self.vendor == 'local':
+        if self.vendor == 'huggingface':
+            # Use Hugging Face Inference API
+            self.client = InferenceClient()
+            self.history = []
+            print(f'✓ Hugging Face client ready for model: {model_name}')
+        elif self.vendor == 'local':
             # Use fast PyTorch inference with transformers instead of llama.cpp
             try:
                 import torch
@@ -116,7 +123,68 @@ class BaseClient(ABC):
             raise ValueError(f'Unknown vendor: {vendor}')
 
     def generate(self, prompt: str, image: PIL.Image = None) -> str:
-        if self.vendor == 'local':
+        if self.vendor == 'huggingface':
+            # Format messages for Hugging Face
+            messages = []
+
+            # Add system prompt if set
+            if self._system_prompt:
+                messages.append({
+                    'role': 'system',
+                    'content': self._system_prompt
+                })
+
+            # Prepare user message content
+            if image is not None:
+                # Convert image to base64
+                buffered = BytesIO()
+                image.save(buffered, format='JPEG')
+                image_data = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                
+                # Multi-modal message with text and image
+                messages.append({
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {
+                            'type': 'image_url',
+                            'image_url': {
+                                'url': f'data:image/jpeg;base64,{image_data}'
+                            }
+                        }
+                    ]
+                })
+            else:
+                # Text-only message
+                messages.append({
+                    'role': 'user',
+                    'content': prompt
+                })
+
+            # Call Hugging Face Inference API (non-streaming)
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+
+            response_text = response.choices[0].message.content
+            self._last_response = response_text
+            
+            # Update history
+            self.history.append({
+                'role': 'user',
+                'content': prompt
+            })
+            self.history.append({
+                'role': 'assistant',
+                'content': response_text
+            })
+            
+            return response_text
+
+        elif self.vendor == 'local':
             import torch
 
             # Format messages for chat template
@@ -261,13 +329,14 @@ class BaseClient(ABC):
         Args:
             prompt (str): The system prompt to set.
         """
-        if self.vendor == 'local':
+        if self.vendor == 'huggingface':
+            self._system_prompt = prompt
+        elif self.vendor == 'local':
             self.history.insert(0, {'role': 'system', 'content': prompt})
         elif self.vendor == 'openai':
             self._system_prompt = prompt
         elif self.vendor == 'gemini':
             self._system_prompt = prompt
-
         else:
             raise ValueError(f'Unknown vendor: {self.vendor}')
 

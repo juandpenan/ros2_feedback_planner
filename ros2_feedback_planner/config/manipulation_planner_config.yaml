@@ -240,12 +240,12 @@ feedback_node:
     llm_client:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
-      model_name: 'gemini-live-2.5-flash-preview' #'gemini-live-2.5-flash-preview' gemini-2.0-flash-live-001 gemini-2.5-flash-native-audio-preview-09-2025
+      model_name: 'gemini-flash-lite-latest'
       temperature: 1.0
       max_tokens: 2000
     feedback_type: 'forecast'  # doremi monologue forecast
     forecast:
-      probability_threshold: neutral
+      probability_threshold: likely
       system_prompt: |
         You are assisting a robot by analyzing and FORECASTING its environment to determine if other robots or dynamic agents could impact the success of its ongoing action. 
         Your goal is to predict the likely future states of all dynamic agents (robots, people, animals, vehicles, moving objects) within the next second, based on their current state, velocities, and behaviors.
