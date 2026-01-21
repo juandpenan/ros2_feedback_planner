@@ -3,9 +3,35 @@
 <package format="3">
   <name>ros2_feedback_planner</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS2 Feedback Planner - LLM-based robot planning with visual feedback</description>
   <maintainer email="juan97pena@gmail.com">juan</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>lifecycle_msgs</depend>
+
+  <depend>tf2_ros</depend>
+
+  <depend>nav2_msgs</depend>
+  <depend>nav2_simple_commander</depend>
+
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_msgs</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_configs_utils</depend>
+
+  <depend>cv_bridge</depend>
+
+  <depend>feedback_planner_interfaces</depend>
+
+  <depend>launch_ros</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

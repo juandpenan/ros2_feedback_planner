@@ -3,13 +3,12 @@
 <package format="3">
   <name>feedback_planner_interfaces</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Custom message and service definitions for the ROS2 Feedback Planner</description>
   <maintainer email="juan97pena@gmail.com">juan</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
-
 
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>

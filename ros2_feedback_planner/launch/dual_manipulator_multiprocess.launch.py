@@ -13,7 +13,7 @@ def generate_launch_description():
     config_file = os.path.join(
         pkg_share, 'config', 'data_generation_manipulation.yaml'
     )
-    
+
     return LaunchDescription([
         # Robot 1 Controller
         Node(
