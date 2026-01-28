@@ -1,4 +1,4 @@
-# ROS2 Feedback Planner# ros2_feedback_planner
+# ROS2 Feedback Planner
 
 Repo with the implementation of paper : todo
 
@@ -9,10 +9,15 @@ A ROS2 package for LLM-based robot planning with visual feedback. The planner us
 Check out the system in action:
 
 ### Navigation Demo
-https://github.com/juandpenan/ros2_feedback_planner/blob/main/media/navigation_collision.mp4
+
+
+https://github.com/user-attachments/assets/78dc06fd-d787-4ac8-b137-8a1e5047cb67
+
 
 ### Manipulation Demo
-https://github.com/juandpenan/ros2_feedback_planner/blob/main/media/manipulation_demo.mp4
+
+https://github.com/user-attachments/assets/98bf1bb0-04ce-4a7b-ac15-30977852f2cd
+
 
 ## Features
 
