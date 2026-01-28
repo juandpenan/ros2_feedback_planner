@@ -5,18 +5,18 @@ repositories:
     version: jazzy-harmonic-devel
 
   # Ignition/Gazebo ROS Integration
-  ros_ign:
-    type: git
-    url: https://github.com/ignitionrobotics/ros_ign.git
-    version: galactic
-  ign_ros2_control:
-    type: git
-    url: https://github.com/AndrejOrsula/ign_ros2_control.git
-    version: devel
-  ros2_controllers:
-    type: git
-    url: https://github.com/AndrejOrsula/ros2_controllers.git
-    version: jtc_effort
+  # ros_ign:
+  #   type: git
+  #   url: https://github.com/ignitionrobotics/ros_ign.git
+  #   version: galactic
+  # ign_ros2_control:
+  #   type: git
+  #   url: https://github.com/AndrejOrsula/ign_ros2_control.git
+  #   version: devel
+  # ros2_controllers:
+  #   type: git
+  #   url: https://github.com/AndrejOrsula/ros2_controllers.git
+  #   version: jtc_effort
 
   ros2_numpy:
     type: git
@@ -41,10 +41,10 @@ repositories:
     type: git
     url: https://github.com/juandpenan/br2_gazebo_worlds.git
     version: main
-  plasys_house_world:
-    type: git
-    url: https://github.com/juandpenan/plasys_house_world.git
-    version: master
+  # plasys_house_world:
+  #   type: git
+  #   url: https://github.com/juandpenan/plasys_house_world.git
+  #   version: master
   pal_gazebo_worlds:
     type: git
     url: https://github.com/pal-robotics/pal_gazebo_worlds.git

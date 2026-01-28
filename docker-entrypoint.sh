@@ -12,6 +12,7 @@ fi
 # Activate Python virtual environment
 if [ -d "${WORKSPACE}/venv" ]; then
     source ${WORKSPACE}/venv/bin/activate
+    export PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH}"
 fi
 
 # Execute the command passed to docker run

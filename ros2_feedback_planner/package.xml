@@ -23,6 +23,7 @@
   <depend>nav2_simple_commander</depend>
 
   <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_py</depend>
   <depend>moveit_msgs</depend>
   <depend>moveit_core</depend>
   <depend>moveit_configs_utils</depend>
