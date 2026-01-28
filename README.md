@@ -9,7 +9,7 @@ A ROS2 package for LLM-based robot planning with visual feedback. The planner us
 Check out the system in action:
 
 ### Navigation Demo
-https://github.com/juandpenan/ros2_feedback_planner/blob/main/media/navigation_demo.mp4
+https://github.com/juandpenan/ros2_feedback_planner/blob/main/media/navigation_collision.mp4
 
 ### Manipulation Demo
 https://github.com/juandpenan/ros2_feedback_planner/blob/main/media/manipulation_demo.mp4
