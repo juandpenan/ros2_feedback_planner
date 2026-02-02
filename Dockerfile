@@ -53,6 +53,18 @@ COPY . ${WORKSPACE}/src/ros2_feedback_planner/
 RUN cd ${WORKSPACE}/src && \
     vcs import < ros2_feedback_planner/thirdparty.repos
 
+# Apply patches to modified third-party packages
+# These patches contain necessary modifications while maintaining anonymity
+RUN cd ${WORKSPACE}/src && \
+    for patch in panda_ign_moveit2 tiago_simulation tiago_navigation br2_gazebo_worlds pal_maps; do \
+        if [ -f ros2_feedback_planner/patches/${patch}.patch ] && [ -s ros2_feedback_planner/patches/${patch}.patch ]; then \
+            echo "Applying ${patch} patch..." && \
+            cd ${patch} && \
+            git apply --whitespace=warn ../ros2_feedback_planner/patches/${patch}.patch && \
+            cd ..; \
+        fi; \
+    done
+
 # Install ROS dependencies using rosdep
 RUN cd ${WORKSPACE} && \
     apt-get update && \

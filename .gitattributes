@@ -1,0 +1,2 @@
+*.patch filter=lfs diff=lfs merge=lfs -text
+patches/*.patch filter=lfs diff=lfs merge=lfs -text

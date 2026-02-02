@@ -1,22 +1,9 @@
 repositories:
+ 
   panda_ign_moveit2:
     type: git
-    url: https://github.com/juandpenan/panda_ign_moveit2.git
+    url: https://github.com/Tiago-Harmonic/panda_ign_moveit2.git
     version: jazzy-harmonic-devel
-
-  # Ignition/Gazebo ROS Integration
-  # ros_ign:
-  #   type: git
-  #   url: https://github.com/ignitionrobotics/ros_ign.git
-  #   version: galactic
-  # ign_ros2_control:
-  #   type: git
-  #   url: https://github.com/AndrejOrsula/ign_ros2_control.git
-  #   version: devel
-  # ros2_controllers:
-  #   type: git
-  #   url: https://github.com/AndrejOrsula/ros2_controllers.git
-  #   version: jtc_effort
 
   ros2_numpy:
     type: git
@@ -39,19 +26,16 @@ repositories:
 
   br2_gazebo_worlds:
     type: git
-    url: https://github.com/juandpenan/br2_gazebo_worlds.git
+    url: https://github.com/Tiago-Harmonic/br2_gazebo_worlds.git
     version: main
-  # plasys_house_world:
-  #   type: git
-  #   url: https://github.com/juandpenan/plasys_house_world.git
-  #   version: master
+
   pal_gazebo_worlds:
     type: git
     url: https://github.com/pal-robotics/pal_gazebo_worlds.git
     version: humble-devel
   pal_maps:
     type: git
-    url: https://github.com/juandpenan/pal_maps.git
+    url: https://github.com/Tiago-Harmonic/pal_maps.git
     version: main
 
   # Motion and Play
@@ -79,11 +63,11 @@ repositories:
     version: jazzy
   tiago_navigation:
     type: git
-    url: https://github.com/juandpenan/tiago_navigation.git
+    url: https://github.com/Tiago-Harmonic/tiago_navigation.git
     version: jazzy
   tiago_simulation:
     type: git
-    url: https://github.com/juandpenan/tiago_simulation.git
+    url: https://github.com/Tiago-Harmonic/tiago_simulation.git
     version: jazzy
   tiago_omni_base:
     type: git
