@@ -43,19 +43,6 @@ A ROS2 package for LLM-based robot planning with visual feedback. The planner us
 
 Follow the [official ROS2 Jazzy installation guide](https://docs.ros.org/en/jazzy/Installation.html):
 
-```bash
-# Add ROS2 apt repository
-sudo apt install software-properties-common
-sudo add-apt-repository universe
-sudo apt update && sudo apt install curl -y
-sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-
-# Install ROS2 Jazzy
-sudo apt update
-sudo apt install ros-jazzy-desktop-full
-```
 
 #### 2. Create Workspace and Clone Repository
 
@@ -69,6 +56,13 @@ git clone https://github.com/juandpenan/ros2_feedback_planner.git
 
 # Import third-party dependencies
 vcs import < ros2_feedback_planner/thirdparty.repos
+
+# Apply required patches to third-party repositories
+for patch in tiago_navigation pal_maps br2_gazebo_worlds tiago_simulation panda_ign_moveit2; do
+    cd ${patch} && \
+    git apply --whitespace=warn ../ros2_feedback_planner/patches/${patch}.patch && \
+    cd ..
+done
 ```
 
 #### 3. Install Dependencies
@@ -128,14 +122,6 @@ docker build -t ros2_feedback_planner:jazzy .
 # Basic run
 docker run -it --rm \
   --network host \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  ros2_feedback_planner:jazzy
-
-# With GPU support (NVIDIA)
-docker run -it --rm \
-  --network host \
-  --gpus all \
   -e DISPLAY=$DISPLAY \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
   ros2_feedback_planner:jazzy
@@ -245,14 +231,8 @@ Launch the navigation demo with TIAGo robot in the Plasys House environment:
 ros2 launch ros2_feedback_planner navigation_demo.launch.py
 
 # Terminal 2: Send a navigation goal
-ros2 topic pub /goal_topic std_msgs/String "data: 'go to the kitchen'" --once
+ros2 lifecycle set /metrics_manager_node configure
 ```
-
-The robot will:
-1. Generate a navigation plan using the configured LLM
-2. Execute the plan using Nav2
-3. Monitor visual feedback from the camera
-4. Replan if obstacles or humans are detected
 
 ### Manipulation Demo
 
@@ -263,20 +243,7 @@ Launch the dual manipulator demo for pick-and-place tasks:
 ros2 launch ros2_feedback_planner manipulation_demo.launch.py
 
 # Terminal 2: Trigger manipulation sequence
-ros2 service call /start_manipulation std_srvs/srv/Trigger
-```
-
-### Running Individual Nodes
-
-```bash
-# Planner node only
-ros2 run ros2_feedback_planner planner_node --ros-args --params-file config/navigation_planner_config.yaml
-
-# Feedback node only
-ros2 run ros2_feedback_planner feedback_node --ros-args --params-file config/navigation_planner_config.yaml
-
-# Metrics manager
-ros2 run ros2_feedback_planner metrics_manager_node --ros-args --params-file config/navigation_planner_config.yaml
+ros2 lifecycle set /metrics_manager_node configure
 ```
 
 ---
@@ -290,22 +257,22 @@ ros2 run ros2_feedback_planner metrics_manager_node --ros-args --params-file con
 │                  ROS2 Feedback Planner              │
 ├─────────────────────────────────────────────────────┤
 │                                                     │
-│  ┌──────────────┐      ┌──────────────┐           │
-│  │   Planner    │◄────►│   Feedback   │           │
-│  │     Node     │      │     Node     │           │
-│  └──────┬───────┘      └──────▲───────┘           │
-│         │                      │                    │
-│         │                      │                    │
-│         ▼                      │                    │
-│  ┌──────────────┐      ┌──────┴───────┐           │
-│  │  Action      │      │   Camera     │           │
-│  │  Executor    │      │   Input      │           │
-│  └──────┬───────┘      └──────────────┘           │
-│         │                                           │
-│         ▼                                           │
-│  ┌──────────────────────────────────┐             │
-│  │  Nav2 / MoveIt2 / Robot Control  │             │
-│  └──────────────────────────────────┘             │
+│  ┌──────────────┐      ┌──────────────┐             │
+│  │   Planner    │◄────►│   Feedback   │             │
+│  │     Node     │      │     Node     │             │
+│  └──────┬───────┘      └──────▲───────┘             │
+│         │                     │                     │
+│         │                     │                     │
+│         ▼                     │                     │
+│  ┌──────────────┐      ┌──────┴───────┐             │
+│  │  Action      │      │   Camera     │             │
+│  │  Executor    │      │   Input      │             │
+│  └──────┬───────┘      └──────┬───────┘             │
+│         │                     │                     │
+│         ▼                     ▼                     │
+│  ┌──────────────────────────────────┐               │
+│  │  Nav2 / MoveIt2 / Robot Control  │               │
+│  └──────────────────────────────────┘               │
 │                                                     │
 └─────────────────────────────────────────────────────┘
          │                           ▲
@@ -410,127 +377,8 @@ ros2 run tf2_tools view_frames
 
 ---
 
-## Package Structure
-
-```
-ros2_feedback_planner/
-├── config/
-│   └── navigation_planner_config.yaml    # Configuration file
-├── launch/
-│   ├── navigation_demo.launch.py         # Navigation demo
-│   ├── manipulation_demo.launch.py       # Manipulation demo
-│   └── dual_manipulator_multiprocess.launch.py
-├── ros2_feedback_planner/
-│   ├── __init__.py
-│   ├── executor.py                       # Plan execution
-│   ├── metrics_manager.py                # Metrics tracking
-│   ├── robot_controller_node.py          # Robot control
-│   ├── scenario_coordinator.py           # Scenario management
-│   ├── utils.py                          # Utility functions
-│   ├── feedback/
-│   │   └── feedback_server.py            # Feedback generation
-│   ├── models/
-│   │   └── client_base.py                # LLM client abstraction
-│   └── planning/
-│       ├── actions.py                    # Robot actions (Nav2, MoveIt)
-│       ├── planner_online.py             # Online LLM planning
-│       ├── planning_output_formats.py    # Plan formats
-│       └── simple_planner.py             # Main planner node
-├── feedback_planner_interfaces/          # Custom messages/services
-├── requirements.txt                      # Python dependencies
-├── thirdparty.repos                      # Third-party ROS packages
-├── Dockerfile                            # Docker build configuration
-├── docker-entrypoint.sh                  # Docker entrypoint script
-├── package.xml                           # ROS package manifest
-└── README.md                             # This file
-```
-
----
-
-## Development
-
-### Running Tests
-
-```bash
-cd ~/ros2_feedback_ws
-colcon test --packages-select ros2_feedback_planner
-colcon test-result --verbose
-```
-
-### Code Style
-
-The project follows PEP 8 style guidelines. Format code with:
-
-```bash
-source ~/ros2_feedback_ws/venv/bin/activate
-black ros2_feedback_planner/
-flake8 ros2_feedback_planner/
-```
-
-### Adding New Planning Strategies
-
-1. Create a new planner class in `ros2_feedback_planner/planning/`
-2. Implement the planning logic
-3. Add configuration in `navigation_planner_config.yaml`
-4. Register the planner in `simple_planner.py`
-
----
-
-## Citation
-
-If you use this package in your research, please cite:
-
-
-todo
----
-
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-## Acknowledgments
-
-- TIAGo robot platform by PAL Robotics
-- ROS2 Navigation Stack (Nav2)
-- MoveIt2 motion planning framework
-- OpenAI, Google, and Hugging Face for LLM APIs
-
----
-
-## Contact
-todo
----
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## Known Limitations
-
-- Visual feedback requires sufficient GPU resources for real-time processing
-- LLM API calls may introduce latency (use local models for faster response)
-- Navigation accuracy depends on map quality and localization
-- Multi-robot coordination is experimental
-
----
-
-## Roadmap
-
-- [ ] Support for additional LLM providers (Claude, Llama 3)
-- [ ] Real robot deployment (tested on simulation only)
-- [ ] Multi-agent coordination improvements
-- [ ] ROS2 Iron and Humble backports
-- [ ] Web-based monitoring dashboard
-- [ ] Improved error recovery strategies
 
 ---

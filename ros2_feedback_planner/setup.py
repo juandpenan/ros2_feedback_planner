@@ -33,6 +33,7 @@ setup(
             'dual_data_gen = ros2_feedback_planner.dual_manipulator_data_generator:main',
             'robot_controller = ros2_feedback_planner.robot_controller_node:main',
             'scenario_coordinator = ros2_feedback_planner.scenario_coordinator:main',
+            'latency_benchmark = ros2_feedback_planner.latency_benchmark:main',
         ],
     },
 )
