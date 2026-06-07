@@ -27,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'feedback_node = ros2_feedback_planner.feedback.feedback_server:main',
+            'ttc_feedback_node = ros2_feedback_planner.feedback.ttc_feedback_server:main',
             'planner_node = ros2_feedback_planner.planning.simple_planner:main',
             'metrics_manager_node = ros2_feedback_planner.metrics_manager:main',
             'manipulator_simulator = ros2_feedback_planner.manipulator_simulator:main',

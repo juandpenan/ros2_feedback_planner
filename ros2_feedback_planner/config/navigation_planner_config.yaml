@@ -542,6 +542,15 @@ planner_node:
 
 feedback_node:
   ros__parameters:
+    ttc:
+      scan_topic: 'scan_raw'
+      forward_start_index: 200
+      forward_end_index: 465
+      valid_min_distance_m: 0.1
+      valid_max_distance_m: 3.0
+      safety_distance_m: 0.5
+      horizon_s: 1.0
+      min_closing_speed_mps: 0.05
     llm_client:
       vendor: 'gemini'
       api_key_variable_name: 'GOOGLE_API_KEY'
