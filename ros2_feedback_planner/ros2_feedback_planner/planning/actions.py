@@ -456,9 +456,13 @@ class BaseAction:
             self.moveit_component_prefix + 'gripper'
         )
 
-    def cancel_actions(self):
+    def cancel_actions(self, blocking=True):
         if self.use_nav:
-            self.navigator.cancelTask()
+            if blocking:
+                self.navigator.cancelTask()
+            elif self.navigator.result_future:
+                self.navigator.info('Canceling current task.')
+                self.nav_cancel_future = self.navigator.goal_handle.cancel_goal_async()
         if self.use_moveit:
             self.cancel_moveit_task()
 

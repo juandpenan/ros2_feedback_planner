@@ -164,7 +164,7 @@ class DeterministicPlannerNode(LifecycleNode):
         self.last_feedback_result = request.feedback_input
         self.cancel_requested = True
         if self.action_manager is not None:
-            self.action_manager.cancel_actions()
+            self.action_manager.cancel_actions(blocking=False)
         self.get_logger().fatal(
             f'TTC requested cancellation: {self.last_feedback_result}'
         )

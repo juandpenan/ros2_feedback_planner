@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
 from ros2_feedback_planner.planning.deterministic_plan import feedback_input
 from ros2_feedback_planner.planning.deterministic_plan import initial_plan
 from ros2_feedback_planner.planning.deterministic_plan import parse_action
