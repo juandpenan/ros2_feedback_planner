@@ -44,6 +44,7 @@ def on_output(event: launch.events.process.ProcessIO) -> None:
 def generate_launch_description():
     namespace = LaunchConfiguration('namespace')
     feedback_executable = LaunchConfiguration('feedback_executable')
+    planner_executable = LaunchConfiguration('planner_executable')
     namespace_launch_arg = DeclareLaunchArgument(
         'namespace',
         default_value=''
@@ -52,6 +53,11 @@ def generate_launch_description():
         'feedback_executable',
         default_value='feedback_node',
         description='Feedback executable: feedback_node or ttc_feedback_node'
+    )
+    planner_executable_arg = DeclareLaunchArgument(
+        'planner_executable',
+        default_value='deterministic_planner_node',
+        description='Planner executable: deterministic_planner_node or planner_node'
     )
     planning_params = os.path.join(
         get_package_share_directory('ros2_feedback_planner'),
@@ -108,7 +114,7 @@ def generate_launch_description():
 
     planning_node = Node(
         package='ros2_feedback_planner',
-        executable='planner_node',
+        executable=planner_executable,
         namespace=namespace,
         output='screen',
         emulate_tty=True,
@@ -149,6 +155,7 @@ def generate_launch_description():
     return LaunchDescription([
         namespace_launch_arg,
         feedback_executable_arg,
+        planner_executable_arg,
         # tiago_gazebo_launch,
         tiago_nav_bringup_launch,
         metrics_manager_node,

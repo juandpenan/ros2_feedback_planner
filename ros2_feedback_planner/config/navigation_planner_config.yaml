@@ -7,6 +7,9 @@ planner_node:
       temperature: 0.5
       max_tokens: 6000
     action_backend: 'nav2'
+    deterministic:
+      destination: 'bed'
+      backup_distance_m: 0.5
     planner_type: 'forecast' # doremi, monologue todo(juandpenan): rename current to method name when name is clear
     forecast:
       feedback_mode: 'continious' # once or continious

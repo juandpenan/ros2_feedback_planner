@@ -48,6 +48,7 @@ class BaseAction:
         if self.use_nav:
             self.all_methods = {
                 'move_forward': self._move_forward,
+                'back_up': self._move_backwards,
                 'move_backwards': self._move_backwards,
                 'move_left': self._move_left,
                 'move_right': self._move_right,
@@ -432,6 +433,7 @@ class BaseAction:
     def get_action_methods(self, actions):
         all_methods = {
             'move_forward': self._move_forward,
+            'back_up': self._move_backwards,
             'move_backwards': self._move_backwards,
             'move_left': self._move_left,
             'move_right': self._move_right,
