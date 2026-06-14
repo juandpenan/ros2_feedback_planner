@@ -169,7 +169,8 @@ class ManipulatorSim(LifecycleNode):
             return
         
         self._routine_running = True
-        self.execute_timer.cancel()
+        if self.execute_timer is not None:
+            self.execute_timer.cancel()
         
         for c in self._cubes:
             if not self.is_active:  # Check if still active

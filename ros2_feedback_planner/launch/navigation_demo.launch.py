@@ -56,7 +56,7 @@ def generate_launch_description():
     )
     planner_executable_arg = DeclareLaunchArgument(
         'planner_executable',
-        default_value='deterministic_planner_node',
+        default_value='planner_node',
         description='Planner executable: deterministic_planner_node or planner_node'
     )
     planning_params = os.path.join(

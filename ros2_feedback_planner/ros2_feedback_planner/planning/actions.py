@@ -48,7 +48,6 @@ class BaseAction:
         if self.use_nav:
             self.all_methods = {
                 'move_forward': self._move_forward,
-                'back_up': self._move_backwards,
                 'move_backwards': self._move_backwards,
                 'move_left': self._move_left,
                 'move_right': self._move_right,
@@ -209,25 +208,25 @@ class BaseAction:
         scene.apply_collision_object(collision_object)
         scene.current_state.update()
 
-        collision_object = CollisionObject()
-        collision_object.header.frame_id = 'world'
-        collision_object.id = 'black_basket'
+        # collision_object = CollisionObject()
+        # collision_object.header.frame_id = 'world'
+        # collision_object.id = 'black_basket'
 
-        box_pose = Pose()
-        box_pose.position.x = 0.55
-        box_pose.position.y = -0.5
-        box_pose.position.z = 0.59
+        # box_pose = Pose()
+        # box_pose.position.x = 0.55
+        # box_pose.position.y = -0.5
+        # box_pose.position.z = 0.59
 
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [0.29, 0.2, 0.135]
+        # box = SolidPrimitive()
+        # box.type = SolidPrimitive.BOX
+        # box.dimensions = [0.29, 0.2, 0.135]
 
-        collision_object.primitives.append(box)
-        collision_object.primitive_poses.append(box_pose)
-        collision_object.operation = CollisionObject.ADD
+        # collision_object.primitives.append(box)
+        # collision_object.primitive_poses.append(box_pose)
+        # collision_object.operation = CollisionObject.ADD
 
-        scene.apply_collision_object(collision_object)
-        scene.current_state.update()
+        # scene.apply_collision_object(collision_object)
+        # scene.current_state.update()
 
     def allow_collision(self, link_a, link_b=None):
         """Allow collision between two links or between a link and all others.
@@ -433,7 +432,6 @@ class BaseAction:
     def get_action_methods(self, actions):
         all_methods = {
             'move_forward': self._move_forward,
-            'back_up': self._move_backwards,
             'move_backwards': self._move_backwards,
             'move_left': self._move_left,
             'move_right': self._move_right,
@@ -456,13 +454,9 @@ class BaseAction:
             self.moveit_component_prefix + 'gripper'
         )
 
-    def cancel_actions(self, blocking=True):
+    def cancel_actions(self):
         if self.use_nav:
-            if blocking:
-                self.navigator.cancelTask()
-            elif self.navigator.result_future:
-                self.navigator.info('Canceling current task.')
-                self.nav_cancel_future = self.navigator.goal_handle.cancel_goal_async()
+            self.navigator.cancelTask()
         if self.use_moveit:
             self.cancel_moveit_task()
 
@@ -471,8 +465,19 @@ class BaseAction:
 
         if self.moveit_goal_handle and self.moveit_result_future:
             future = self.moveit_goal_handle.cancel_goal_async()
-            rclpy.spin_until_future_complete(
-                self.moveit_node, future)
+            # Do NOT use rclpy.spin_until_future_complete here — this method
+            # is called from within a service callback that is already being
+            # executed by the MultiThreadedExecutor.  Entering another spin
+            # raises "Executor is already spinning".  Instead, poll the future
+            # with a short sleep; the existing executor will resolve it.
+            timeout_sec = 5.0
+            start = time.time()
+            while not future.done():
+                time.sleep(0.05)
+                if time.time() - start > timeout_sec:
+                    self.moveit_node.get_logger().warning(
+                        'Timeout waiting for MoveIt cancel response')
+                    break
         return
 
     def is_moveit_task_complete(self):
@@ -526,6 +531,9 @@ class BaseAction:
         method = self.all_methods.get(action_name)
         if not method:
             raise ValueError(f'Unknown action: {action_name}')
+        # Treat empty/whitespace-only args as no argument
+        if isinstance(arg, str) and not arg.strip():
+            arg = None
         if arg is None:
             try:
                 return method()
@@ -655,14 +663,16 @@ class BaseAction:
             #     'grey': (0.80, 0.25, 0.53),
             # }
             pick_height = 0.53
-            cube_colors = ['red',
-                           'blue',
-                           'green',
-                           'yellow',
-                           'purple',
-                           'cyan',
-                           'orange',
-                           'black',
+            # cube_colors = ['red',
+            #                'blue',
+            #                'green',
+            #                'yellow',
+            #                'purple',
+            #                'cyan',
+            #                'orange',
+            #                'black',
+            #                'grey',]
+            cube_colors = ['green',
                            'grey',]
             cube_poses = {}
             for color in cube_colors:
@@ -1373,11 +1383,11 @@ class BaseAction:
 
         return True
 
-    def _pitch_retract(self, angle):
+    def _pitch_retract(self, angle=0.5):
         """Rotate the arm's joint_2 by the specified angle relative to current position.
 
         Args:
-            angle: The angle to rotate joint_2 by (in radians)
+            angle: The angle to rotate joint_2 by (in radians). Defaults to 0.5 rad.
 
         Returns:
             bool: True if execution succeeded, False otherwise

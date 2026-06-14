@@ -9,6 +9,8 @@ from sensor_msgs.msg import LaserScan
 from rclpy.duration import Duration
 from std_msgs.msg import String, Bool
 from lifecycle_msgs.srv import ChangeState
+from lifecycle_msgs.srv import GetState
+from lifecycle_msgs.msg import State as LifecycleMsgState
 from lifecycle_msgs.msg import Transition
 from std_srvs.srv import Empty
 from std_msgs.msg import Empty as Emptymsg
@@ -19,6 +21,17 @@ import random
 import math
 import os
 import time
+from types import SimpleNamespace
+
+
+class CompletedTransition:
+    """Small future-like object used when a lifecycle transition is already satisfied."""
+
+    def __init__(self, success):
+        self._result = SimpleNamespace(success=success)
+
+    def result(self):
+        return self._result
 
 
 class MetricsManager(LifecycleNode):
@@ -89,15 +102,30 @@ class MetricsManager(LifecycleNode):
                 'planner_node/change_state',
                 callback_group=self.callback_group
             )
+            self.planner_state_client = self.create_client(
+                GetState,
+                'planner_node/get_state',
+                callback_group=self.callback_group
+            )
             self.feedback_manager_client = self.create_client(
                 ChangeState,
                 'feedback_node/change_state',
+                callback_group=self.callback_group
+            )
+            self.feedback_state_client = self.create_client(
+                GetState,
+                'feedback_node/get_state',
                 callback_group=self.callback_group
             )
 
             self.manipulation_sim_client = self.create_client(
                 ChangeState,
                 'manipulator_simulator/change_state',
+                callback_group=self.callback_group
+            )
+            self.manipulation_state_client = self.create_client(
+                GetState,
+                'manipulator_simulator/get_state',
                 callback_group=self.callback_group
             )
             self.change_pick_order_client = self.create_client(
@@ -222,41 +250,231 @@ class MetricsManager(LifecycleNode):
         self.get_logger().fatal('Successfully configured all nodes.')
         return TransitionCallbackReturn.SUCCESS
 
-    def init_planner_feedback_simulator(self):
+    def _get_lifecycle_state(self, state_client, node_name, timeout_sec=3.0):
+        if not state_client.wait_for_service(timeout_sec=timeout_sec):
+            self.get_logger().warn(f'{node_name} get_state service is not available')
+            return None
+
+        future = state_client.call_async(GetState.Request())
+        deadline = time.monotonic() + timeout_sec
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        if not future.done():
+            self.get_logger().warn(f'Timed out waiting for {node_name} state')
+            return None
+
+        try:
+            return future.result().current_state.id
+        except Exception as exc:
+            self.get_logger().warn(f'Could not read {node_name} state: {exc}')
+            return None
+
+    def _request_lifecycle_transition(
+        self,
+        node_name,
+        change_client,
+        state_client,
+        transition_id,
+        valid_from,
+        already_ok,
+        done_callback=None,
+    ):
+        state_id = self._get_lifecycle_state(state_client, node_name)
+        if state_id in already_ok:
+            self.get_logger().info(
+                f'{node_name} already satisfies transition {transition_id}; skipping'
+            )
+            if done_callback is not None:
+                done_callback(CompletedTransition(True))
+            return None
+
+        if state_id not in valid_from:
+            self.get_logger().warn(
+                f'Skipping invalid transition {transition_id} for {node_name} '
+                f'from lifecycle state {state_id}'
+            )
+            return None
+
         req = ChangeState.Request()
         transition = Transition()
-        transition.id = Transition.TRANSITION_CONFIGURE
+        transition.id = transition_id
         req.transition = transition
+        future = change_client.call_async(req)
+        if done_callback is not None:
+            future.add_done_callback(done_callback)
+        return future
 
-        # Configure planner and wait for completion
-        future = self.planner_manager_client.call_async(req)
-        future.add_done_callback(self.planner_configure_cb)
+    def _configure_planner(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'planner_node',
+            self.planner_manager_client,
+            self.planner_state_client,
+            Transition.TRANSITION_CONFIGURE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,),
+            already_ok=(
+                LifecycleMsgState.PRIMARY_STATE_INACTIVE,
+                LifecycleMsgState.PRIMARY_STATE_ACTIVE,
+            ),
+            done_callback=done_callback,
+        )
+
+    def _activate_planner(self):
+        return self._request_lifecycle_transition(
+            'planner_node',
+            self.planner_manager_client,
+            self.planner_state_client,
+            Transition.TRANSITION_ACTIVATE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_INACTIVE,),
+            already_ok=(LifecycleMsgState.PRIMARY_STATE_ACTIVE,),
+        )
+
+    def _deactivate_planner(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'planner_node',
+            self.planner_manager_client,
+            self.planner_state_client,
+            Transition.TRANSITION_DEACTIVATE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_ACTIVE,),
+            already_ok=(
+                LifecycleMsgState.PRIMARY_STATE_INACTIVE,
+                LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,
+            ),
+            done_callback=done_callback,
+        )
+
+    def _cleanup_planner(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'planner_node',
+            self.planner_manager_client,
+            self.planner_state_client,
+            Transition.TRANSITION_CLEANUP,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_INACTIVE,),
+            already_ok=(LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,),
+            done_callback=done_callback,
+        )
+
+    def _configure_feedback(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'feedback_node',
+            self.feedback_manager_client,
+            self.feedback_state_client,
+            Transition.TRANSITION_CONFIGURE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,),
+            already_ok=(
+                LifecycleMsgState.PRIMARY_STATE_INACTIVE,
+                LifecycleMsgState.PRIMARY_STATE_ACTIVE,
+            ),
+            done_callback=done_callback,
+        )
+
+    def _activate_feedback(self):
+        return self._request_lifecycle_transition(
+            'feedback_node',
+            self.feedback_manager_client,
+            self.feedback_state_client,
+            Transition.TRANSITION_ACTIVATE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_INACTIVE,),
+            already_ok=(LifecycleMsgState.PRIMARY_STATE_ACTIVE,),
+        )
+
+    def _deactivate_feedback(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'feedback_node',
+            self.feedback_manager_client,
+            self.feedback_state_client,
+            Transition.TRANSITION_DEACTIVATE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_ACTIVE,),
+            already_ok=(
+                LifecycleMsgState.PRIMARY_STATE_INACTIVE,
+                LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,
+            ),
+            done_callback=done_callback,
+        )
+
+    def _cleanup_feedback(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'feedback_node',
+            self.feedback_manager_client,
+            self.feedback_state_client,
+            Transition.TRANSITION_CLEANUP,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_INACTIVE,),
+            already_ok=(LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,),
+            done_callback=done_callback,
+        )
+
+    def _configure_manipulation(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'manipulator_simulator',
+            self.manipulation_sim_client,
+            self.manipulation_state_client,
+            Transition.TRANSITION_CONFIGURE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,),
+            already_ok=(
+                LifecycleMsgState.PRIMARY_STATE_INACTIVE,
+                LifecycleMsgState.PRIMARY_STATE_ACTIVE,
+            ),
+            done_callback=done_callback,
+        )
+
+    def _activate_manipulation(self):
+        return self._request_lifecycle_transition(
+            'manipulator_simulator',
+            self.manipulation_sim_client,
+            self.manipulation_state_client,
+            Transition.TRANSITION_ACTIVATE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_INACTIVE,),
+            already_ok=(LifecycleMsgState.PRIMARY_STATE_ACTIVE,),
+        )
+
+    def _deactivate_manipulation(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'manipulator_simulator',
+            self.manipulation_sim_client,
+            self.manipulation_state_client,
+            Transition.TRANSITION_DEACTIVATE,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_ACTIVE,),
+            already_ok=(
+                LifecycleMsgState.PRIMARY_STATE_INACTIVE,
+                LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,
+            ),
+            done_callback=done_callback,
+        )
+
+    def _cleanup_manipulation(self, done_callback=None):
+        return self._request_lifecycle_transition(
+            'manipulator_simulator',
+            self.manipulation_sim_client,
+            self.manipulation_state_client,
+            Transition.TRANSITION_CLEANUP,
+            valid_from=(LifecycleMsgState.PRIMARY_STATE_INACTIVE,),
+            already_ok=(LifecycleMsgState.PRIMARY_STATE_UNCONFIGURED,),
+            done_callback=done_callback,
+        )
+
+    def init_planner_feedback_simulator(self):
+        # Wait for lifecycle services to be available before calling
+        self.get_logger().fatal('Waiting for planner_node lifecycle service...')
+        self.planner_manager_client.wait_for_service(timeout_sec=30.0)
+        self._configure_planner(self.planner_configure_cb)
         
-        # Configure feedback and activate it after configuration completes
-        future_feedback = self.feedback_manager_client.call_async(req)
-        future_feedback.add_done_callback(self.feedback_configure_cb)
+        self.get_logger().fatal('Waiting for feedback_node lifecycle service...')
+        self.feedback_manager_client.wait_for_service(timeout_sec=30.0)
+        self._configure_feedback(self.feedback_configure_cb)
         
         if self.test_type_param == 'manipulation':
-            future_manipulation = self.manipulation_sim_client.call_async(req)
-            future_manipulation.add_done_callback(self.manipulation_configure_cb)
+            self.get_logger().fatal('Waiting for manipulator_simulator lifecycle service...')
+            self.manipulation_sim_client.wait_for_service(timeout_sec=30.0)
+            self._configure_manipulation(self.manipulation_configure_cb)
 
     def feedback_configure_cb(self, future):
         """Activate feedback node after successful configuration."""
         if future.result().success:
             self.get_logger().info('Feedback node configured, activating...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_ACTIVATE
-            req.transition = transition
-            self.feedback_manager_client.call_async(req)
+            self._activate_feedback()
         else:
             self.get_logger().error('Error configuring feedback node, retrying...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_CONFIGURE
-            req.transition = transition
-            future = self.feedback_manager_client.call_async(req)
-            future.add_done_callback(self.feedback_configure_cb)
+            self._configure_feedback(self.feedback_configure_cb)
 
     def manipulation_configure_cb(self, future):
         """Handle manipulation simulator configuration response."""
@@ -264,29 +482,20 @@ class MetricsManager(LifecycleNode):
             self.get_logger().info('Manipulation simulator configured successfully')
         else:
             self.get_logger().error('Error configuring manipulation simulator, retrying...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_CONFIGURE
-            req.transition = transition
-            future = self.manipulation_sim_client.call_async(req)
-            future.add_done_callback(self.manipulation_configure_cb)
+            self._configure_manipulation(self.manipulation_configure_cb)
 
     def execute_plan(self):
-        req = ChangeState.Request()
-        transition = Transition()
-        transition.id = Transition.TRANSITION_ACTIVATE
-        req.transition = transition
         self.get_logger().fatal('Executing plan...')
         if self.test_type_param == 'navigation':
-            self.planner_manager_client.call_async(req)
+            self._activate_planner()
         elif self.test_type_param == 'manipulation' and self.will_collide:
-            self.planner_manager_client.call_async(req)
-            self.manipulation_sim_client.call_async(req)
+            self._activate_planner()
+            self._activate_manipulation()
         elif self.test_type_param == 'manipulation' and not self.will_collide:
-            self.planner_manager_client.call_async(req)
+            self._activate_planner()
             sleep_duration = Duration(seconds=5.0)
             self.get_clock().sleep_for(sleep_duration)
-            self.manipulation_sim_client.call_async(req)
+            self._activate_manipulation()
 
     def change_cube_order(self):
         req = TriggerManipulation.Request()
@@ -297,19 +506,17 @@ class MetricsManager(LifecycleNode):
     def planner_configure_cb(self, future):
         if future.result().success:
             self.is_planner_configured = True
-            self.check_to_start_timer = self.create_timer(
-                0.5,
-                self.check_to_start,
-                callback_group=self.callback_group
-            )
+            if getattr(self, 'check_to_start_timer', None) is None:
+                self.check_to_start_timer = self.create_timer(
+                    0.5,
+                    self.check_to_start,
+                    callback_group=self.callback_group
+                )
+            else:
+                self.check_to_start_timer.reset()
         else:
             self.get_logger().error('Error configuring planner node')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_CONFIGURE
-            req.transition = transition
-            future = self.planner_manager_client.call_async(req)
-            future.add_done_callback(self.planner_configure_cb)
+            self._configure_planner(self.planner_configure_cb)
 
     def on_activate(self, state: State):
         self.get_logger().fatal('Activating...')
@@ -359,41 +566,21 @@ class MetricsManager(LifecycleNode):
         """Callback to handle feedback node deactivation response."""
         if future.result().success:
             self.get_logger().info('Feedback node deactivated successfully')
-            req_cleanup = ChangeState.Request()
-            transition_cleanup = Transition()
-            transition_cleanup.id = Transition.TRANSITION_CLEANUP
-            req_cleanup.transition = transition_cleanup
-            future_feedback = self.feedback_manager_client.call_async(req_cleanup)
-            future_feedback.add_done_callback(self.feedback_cleanup_cb)
+            self._cleanup_feedback(self.feedback_cleanup_cb)
             return
         else:
             self.get_logger().warn('Feedback node deactivation failed, retrying...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_DEACTIVATE
-            req.transition = transition
-            future = self.feedback_manager_client.call_async(req)
-            future.add_done_callback(self.feedback_deactivate_cb)
+            self._deactivate_feedback(self.feedback_deactivate_cb)
 
     def planner_deactivate_cb(self, future):
         """Handle planner node deactivation response."""
         try:
             if future.result().success:
                 self.get_logger().info('Planner node deactivated successfully')
-                req_cleanup = ChangeState.Request()
-                transition_cleanup = Transition()
-                transition_cleanup.id = Transition.TRANSITION_CLEANUP
-                req_cleanup.transition = transition_cleanup
-                future_planner = self.planner_manager_client.call_async(req_cleanup)
-                future_planner.add_done_callback(self.planner_cleanup_cb)
+                self._cleanup_planner(self.planner_cleanup_cb)
             else:
                 self.get_logger().warn('Planner node deactivation failed, but continuing reset')
-                req = ChangeState.Request()
-                transition = Transition()
-                transition.id = Transition.TRANSITION_DEACTIVATE
-                req.transition = transition
-                future = self.planner_manager_client.call_async(req)
-                future.add_done_callback(self.feedback_deactivate_cb)
+                self._deactivate_planner(self.planner_deactivate_cb)
         except Exception as e:
             self.get_logger().error(f'Error in planner deactivation callback: {e}')
 
@@ -404,12 +591,7 @@ class MetricsManager(LifecycleNode):
             self.get_logger().info('Feedback node cleaned up successfully')
         else:
             self.get_logger().warn('Feedback node cleanup failed, retrying...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_CLEANUP
-            req.transition = transition
-            future = self.feedback_manager_client.call_async(req)
-            future.add_done_callback(self.feedback_cleanup_cb)
+            self._cleanup_feedback(self.feedback_cleanup_cb)
 
     def planner_cleanup_cb(self, future):
         """Handle planner node cleanup response."""
@@ -429,12 +611,7 @@ class MetricsManager(LifecycleNode):
                 self.planner_cleanup_cb(future)
         else:
             self.get_logger().warn('Planner node cleanup failed, retrying...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_CLEANUP
-            req.transition = transition
-            future = self.planner_manager_client.call_async(req)
-            future.add_done_callback(self.planner_cleanup_cb)
+            self._cleanup_planner(self.planner_cleanup_cb)
 
     def reset(self):
         """Reset the metrics manager and deactivate all managed nodes."""
@@ -442,38 +619,20 @@ class MetricsManager(LifecycleNode):
         self.is_resetting = True
         # Deactivate all nodes - use callbacks to handle failures gracefully
         self.save_all_metrics_to_csv()
-        req = ChangeState.Request()
-        transition = Transition()
-        transition.id = Transition.TRANSITION_DEACTIVATE
-        req.transition = transition
-        future_feedback = self.feedback_manager_client.call_async(req)
-        future_feedback.add_done_callback(self.feedback_deactivate_cb)
-        
-        future_planner = self.planner_manager_client.call_async(req)
-        future_planner.add_done_callback(self.planner_deactivate_cb)
+        self._deactivate_feedback(self.feedback_deactivate_cb)
+        self._deactivate_planner(self.planner_deactivate_cb)
 
         if self.test_type_param == 'manipulation':
-            future_manipulation = self.manipulation_sim_client.call_async(req)
-            future_manipulation.add_done_callback(self.manipulation_deactivate_cb)
+            self._deactivate_manipulation(self.manipulation_deactivate_cb)
 
     def manipulation_deactivate_cb(self, future):
         """Handle manipulation simulator deactivation response."""
         try:
             if future.result().success:
-                req_cleanup = ChangeState.Request()
-                transition_cleanup = Transition()
-                transition_cleanup.id = Transition.TRANSITION_CLEANUP
-                req_cleanup.transition = transition_cleanup
-                future_manipulation_cleanup = self.manipulation_sim_client.call_async(req_cleanup)
-                future_manipulation_cleanup.add_done_callback(self.manipulation_cleanup_cb)
+                self._cleanup_manipulation(self.manipulation_cleanup_cb)
             else:
                 self.get_logger().warn('Manipulation simulator deactivation failed, retrying...')
-                req = ChangeState.Request()
-                transition = Transition()
-                transition.id = Transition.TRANSITION_DEACTIVATE
-                req.transition = transition
-                future = self.manipulation_sim_client.call_async(req)
-                future.add_done_callback(self.manipulation_deactivate_cb)
+                self._deactivate_manipulation(self.manipulation_deactivate_cb)
         except Exception as e:
             self.get_logger().error(f'Error in manipulation deactivation callback: {e}')
 
@@ -484,12 +643,7 @@ class MetricsManager(LifecycleNode):
             self.is_manipulation_cleaned_up = True
         else:
             self.get_logger().warn('Manipulation simulator cleanup failed, retrying...')
-            req = ChangeState.Request()
-            transition = Transition()
-            transition.id = Transition.TRANSITION_CLEANUP
-            req.transition = transition
-            future = self.manipulation_sim_client.call_async(req)
-            future.add_done_callback(self.manipulation_cleanup_cb)
+            self._cleanup_manipulation(self.manipulation_cleanup_cb)
 
     def laser_cb(self, msg):
         if not self.is_checking_for_collision:
@@ -562,14 +716,7 @@ class MetricsManager(LifecycleNode):
                 self.start_test_time = self.get_clock().now().to_msg()
                 self.metrics_timer.reset()
             else:
-                cube_colors = ['red',
-                               'blue',
-                               'green',
-                               'yellow',
-                               'purple',
-                               'cyan',
-                               'orange',
-                               'black',
+                cube_colors = ['green',
                                'grey',]
                 random.shuffle(cube_colors)
                 start = self.first_action.find('(')

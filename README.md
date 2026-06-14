@@ -224,25 +224,31 @@ feedback_node:
 
 ### Navigation Demo
 
-Launch the navigation demo with TIAGo robot in the Plasys House environment:
+Start the TIAGo simulation in the Plasys House environment before launching the planner:
 
 ```bash
-# Terminal 1: Launch Gazebo simulation and navigation
+# Terminal 1: Launch Gazebo simulation and navigation stack
+ros2 launch tiago_gazebo tiago_gazebo.launch.py is_public_sim:=True world_name:=plasys_house x:=-5.5 y:=-3.8 Y:=1.5708
+
+# Terminal 2: Launch the planner nodes
 ros2 launch ros2_feedback_planner navigation_demo.launch.py
 
-# Terminal 2: Send a navigation goal
+# Terminal 3: Start execution
 ros2 lifecycle set /metrics_manager_node configure
 ```
 
 ### Manipulation Demo
 
-Launch the dual manipulator demo for pick-and-place tasks:
+Start the dual manipulator simulation before launching the planner:
 
 ```bash
-# Terminal 1: Launch manipulation simulation
+# Terminal 1: Launch Gazebo simulation
+ros2 launch panda multipanda_gz.launch.py
+
+# Terminal 2: Launch the planner nodes
 ros2 launch ros2_feedback_planner manipulation_demo.launch.py
 
-# Terminal 2: Trigger manipulation sequence
+# Terminal 3: Start execution
 ros2 lifecycle set /metrics_manager_node configure
 ```
 

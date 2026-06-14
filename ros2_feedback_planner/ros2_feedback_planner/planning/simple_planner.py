@@ -358,6 +358,9 @@ class PlannerNode(LifecycleNode):
         self.timer.cancel()
 
         action = self.last_plan[0]
+        # Strip leading numbering like '1. ' from LLM output
+        if action and action[0].isdigit() and '. ' in action:
+            action = action[action.index('. ') + 2:]
         if 'done' in str(action).lower():
             self.get_logger().fatal('Plan execution complete.')
             # Destroy timer to prevent re-triggering
@@ -468,6 +471,9 @@ class PlannerNode(LifecycleNode):
         self.timer.cancel()
 
         action = self.last_plan[0]
+        # Strip leading numbering like '1. ' from LLM output
+        if action and action[0].isdigit() and '. ' in action:
+            action = action[action.index('. ') + 2:]
         if not self.is_activated:
             self.get_logger().info('Planner deactivated during execution, exiting')
             return

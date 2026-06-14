@@ -381,5 +381,3 @@ manipulator_simulator:
     orange: [0.95, -0.25, 0.55]
     black: [0.65, 0.0, 0.53]
     grey: [0.8, 0.25, 0.55]
-
-
